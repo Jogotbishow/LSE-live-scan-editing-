@@ -1,12 +1,14 @@
-"""Round 19 merged seg-completeness gate for full-page CC-mask.
+"""Round 20 merged seg-completeness gate for full-page CC-mask.
 
 Evolved from Round 17 Track B (gate_ccmask.py): the fixed logo rect
 (150,120,510,450) is GONE — the exclusion rect is detected per page
 (logo_detect.detect_logo_rect); blue seal regions are excluded
 (detect_seal_regions); sig_y uses the anchor check. The -2 band rule
 (DECISIONS.md, cw > 120) is kept in full_page_mask() — same surgical
-block as ccmask.full_page_clean(). See improve/ROUND19-REPORT.md
-(Raviraj gate 9/16 -> 17/8).
+block as ccmask.full_page_clean(). Round 20 adds the G2 gateside rule
+(line-band core-assignment fix: a T1 flag is suppressed iff more than
+half of the core's pixels lie outside its word's LINE band). See
+improve/ROUND20-REPORT.md (Raviraj gate 17/8 -> 23/2).
 
 Original Round 17 purpose:
 
@@ -357,6 +359,59 @@ def gate(img, seg):
                       [x, y, x + cw, y + ch], b, total))
     worst.sort(reverse=True)
     t1_flags = [t for t in worst if t[0] > CORE_OUT_FRAC and t[1] > CORE_OUT_EXT]
+    t1_flags_raw0 = len(t1_flags)  # pre-suppression count (band + seal)
+    # --- ROUND 20 TRACK-GATESIDE (d): line-band core-assignment fix ---
+    # A core is blamed on its assigned word only if the core's ink belongs
+    # to that word's LINE. assign_cores assigns by max pixel overlap with a
+    # word BOX, ignoring lines: a signature stroke descending from above
+    # the line grazes the word box below and gets assigned to it, and T1
+    # then blames the (correct) word for ink that is not its letter.
+    # Rule (no new magic number — majority, 0.50): suppress the flag iff
+    # MORE THAN HALF of the core's pixels lie outside its word's LINE
+    # BAND (min y0 .. max y1 of the words on that line), above or below.
+    # A letter of the word lives inside its line band by construction
+    # (measured R20-gateside, 27 pages, 99 cores with out_frac>0.25:
+    # every REAL T1 flag has above_band == below_band == 0.00 except
+    # p01a 0.14 and p13-seal 0.40 — both kept; the p08 stroke core has
+    # above_band 0.90. Fill/blue corroborate but are NOT rule inputs:
+    # blue would wrongly suppress the p01a logo-"A" core, fill alone
+    # would wrongly suppress the p12 "P" core — see TRACK-REPORT.md).
+    _band = {}
+    for _wd in words:
+        _ln = _wd.get("line")
+        if _ln is None:
+            continue
+        _b = _wd["box"]
+        if _ln not in _band:
+            _band[_ln] = [_b[1], _b[3]]
+        else:
+            _band[_ln][0] = min(_band[_ln][0], _b[1])
+            _band[_ln][1] = max(_band[_ln][1], _b[3])
+
+    def _band_fracs(_i, _wi):
+        _x, _y, _cw, _ch, _area = (int(v) for v in stats[_i])
+        _m = (lab[_y:_y + _ch, _x:_x + _cw] == _i)
+        _tot = int(_m.sum())
+        if _tot == 0:
+            return 0.0, 0.0
+        _b = words[_wi]["box"]
+        _ln = words[_wi].get("line")
+        _top, _bot = _band.get(_ln, [_b[1], _b[3]])
+        _ys = np.nonzero(_m)[0] + _y
+        return (round(float((_ys < _top).mean()), 3),
+                round(float((_ys > _bot).mean()), 3))
+
+    t1_band_suppressed = []
+    t1_flags2 = []
+    for t in t1_flags:
+        _ab, _bb = _band_fracs(t[2], t[3])
+        if max(_ab, _bb) > 0.50:
+            t1_band_suppressed.append({"core_box": t[4], "word_idx": t[3],
+                                       "word_box": t[5], "outside_frac": t[0],
+                                       "above_band": _ab, "below_band": _bb})
+        else:
+            t1_flags2.append(t)
+    t1_flags = t1_flags2
     t1_kept = []
     for t in t1_flags[:10]:
         _cx = (t[4][0] + t[4][2]) / 2
@@ -417,8 +472,10 @@ def gate(img, seg):
                "t1_worst": [{"outside_frac": t[0], "extension_px": t[1],
                              "core_box": t[4], "word_idx": t[3],
                              "word_box": t[5]} for t in worst[:5]],
-               "t1_flags": len(t1_kept), "t1_flags_raw": len(t1_flags),
+               "t1_flags": len(t1_kept), "t1_flags_raw": t1_flags_raw0,
                "t1_seal_suppressed": len(t1_flags) - len(t1_kept),
+               "t1_band_suppressed": len(t1_band_suppressed),
+               "t1_band_suppressed_list": t1_band_suppressed,
                "t2_flags": len(t2_flags),
                "seal_boxes": seal_boxes,
                "reasons": reasons}

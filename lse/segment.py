@@ -1,12 +1,14 @@
 """Live-Scan word segmentation WITHOUT recognition (v5-300).
 
-Round 19 merged baseline (promoted 2026-11-08): Round 4 Track A
+Round 20 merged baseline (promoted 2026-11-08): Round 4 Track A
 native-300-DPI scaling + fixes F1-F6, Round 4 Track C v4 rules
 (V4-1..V4-6), Round 6 Track B cluster-anchor signature zone, plus
 Round 19: per-page logo exclusion rect (logo_detect), sig_y anchor
 check (sign-off-zone validation), top2a all-cuts/subcov/row-split
-blob splitter, top2b rhythm-DP fallback. See
-improve/ROUND19-REPORT.md for measurements (Raviraj gate 9/16 -> 17/8).
+blob splitter, top2b rhythm-DP fallback; plus Round 20: p21
+dark-core reclaim (reclaim2c, after validation only) and the G2
+gateside rule (in gate.py). See improve/ROUND20-REPORT.md for
+measurements (Raviraj gate 17/8 -> 23/2).
 
 Connected components -> lines -> words. No ML, no OCR, no character
 reading. Output: word boxes + estimated font size. The input image is
@@ -262,18 +264,29 @@ def segment_array(img, image_name="", deskew=True):
     print(f"components after signature filter: {len(comps)}")
 
     # --- BUG 1 FIX: split a merged bold blob (e.g. highlighted title) into words ---
-    def _extract_subs(ink_mask):
+    def _extract_subs(ink_mask, area_floor=34, h_floor=0.4):
         """Connected components of a dark-ink mask -> letter-height pieces.
         Merged V4-6 + F4: 4-connectivity (F4 breaks halftone dot-chains at 300 DPI);
-        area floor 34 = 15 x 2.25 (300-DPI scaling)."""
+        area floor 34 = 15 x 2.25 (300-DPI scaling).
+        Round 20 track-p21 v2: core subs (grey<140) use area_floor=20 — a light
+        "g" fragments vertically at 140 (bowl 51 / mid 31 / bottom 26 px on p13);
+        the 34 floor dropped the descender pieces, so the orphan box covered
+        only the bowl and the gate core stuck out below (new T1 0.505). Dark
+        subs keep 34 (unchanged behaviour for grouping).
+        v2b: the binding constraint was actually the HEIGHT floor (0.4*med_h):
+        the "g" descender fragments are 6-7px tall < 0.4*21=8.4, so they never
+        became core subs at all. Core subs use h_floor=0.25 (5.25px at med_h 21)
+        — the orphan width/height/overlap guards still filter junk; a lone
+        6px fragment is too narrow to be an orphan on its own, it only joins
+        its own letter via the 2D clustering."""
         n2, lab2, st2, _ = cv2.connectedComponentsWithStats(
             ink_mask.astype(np.uint8), connectivity=4)
         subs = []
         for i in range(1, n2):
             x, y, ww, hh, area = (int(v) for v in st2[i])
-            if area < 34:  # 15 x 2.25
+            if area < area_floor:
                 continue
-            if hh < 0.4 * med_h or hh > 2.5 * med_h:
+            if hh < h_floor * med_h or hh > 2.5 * med_h:
                 continue  # drops underline remnants and non-letter chunks
             subs.append((x, y, ww, hh))
         subs.sort(key=lambda s: s[0])
@@ -282,6 +295,12 @@ def segment_array(img, image_name="", deskew=True):
 
     def _group_subs(subs, mult=2.0):
         """Round 19 Track 2a: split at ALL gaps that reach max(5, mult*median gap)
+        — Round 20 track-p21: the floor is now max(8, 0.30*med_h, mult*med_gap),
+        the main pipeline's own word-gap floor (V4-4). A blob-splitter cutting at
+        6px contradicts the pipeline's word definition (gaps <= that are letter
+        gaps): p21 "allotted" was cut at a 6px letter gap (med_gap 3, thr 6).
+        The Aug/May title word gap is 8px at med_h 26 (floor 8.0, >= inclusive)
+        so the measured title behaviour is preserved — verified by the 25+6 run.
         (TOP-2 cap removed — the old rule kept only the two largest gaps, silently
         dropping middle pieces; measured cause of 58/73 R19 flags, e.g. Ambawadi
         "wa"+"a" lost while tot_w 61.7% still passed). Principle: XY-cut/RLSA —
@@ -303,24 +322,25 @@ def segment_array(img, image_name="", deskew=True):
         for c in subs[1:]:
             gaps.append(c[0] - rmax)
             rmax = max(rmax, c[0] + c[2])
-        # R19-fix (Aug p1 email "pgfoils@pgfoils.in", 2026-11-08): for ERODED subs
-        # (mult 1.5) the median gap is taken over STRICTLY POSITIVE gaps only.
-        # Erosion inflates gaps and leaves zero/negative gaps from subs that touch
-        # or overlap (a big merged sub overlapping smaller subs); those are not
-        # gaps at all, and including them drags the median down so the threshold
-        # cuts inside words. Measured on the Aug p1 email blob (eroded): all-gap
-        # median 8 -> thr 12 (over-splits "pgfoils.in" into 3 fragments);
-        # positive-gap median 26 -> thr 39 (exactly the 2 correct words).
-        # Uneroded subs (mult 2.0) keep the all-gap median — changing it there
-        # REGRESSED a real split (Aug p1 y~2457: an 11px word gap fell below a
-        # threshold raised 10 -> 12, merging two words). So this applies to
-        # eroded subs only.
+        # R19-fix (Aug p1 email "pgfoils@pgfoils.in", 2026-11-08) — RESTORED by the
+        # Round 20 merge: the R20 tracks were built from a pre-fix copy of the R19
+        # segmenter, so this was missing from reclaim2c. For ERODED subs (mult 1.5)
+        # the median gap is taken over STRICTLY POSITIVE gaps only. Erosion inflates
+        # gaps and leaves zero/negative gaps from subs that touch or overlap (a big
+        # merged sub overlapping smaller subs); those are not gaps at all, and
+        # including them drags the median down so the threshold cuts inside words.
+        # Measured on the Aug p1 email blob (eroded): all-gap median 8 -> thr 12
+        # (over-splits "pgfoils.in" into 3 fragments); positive-gap median 26 ->
+        # thr 39 (exactly the 2 correct words). Uneroded subs (mult 2.0) keep the
+        # all-gap median — changing it there REGRESSED a real split (Aug p1 y~2457:
+        # an 11px word gap fell below a threshold raised 10 -> 12, merging two
+        # words). So this applies to eroded subs only.
         if mult < 2.0:
             _pos = [g for g in gaps if g > 0]
             med_gap = sorted(_pos)[len(_pos) // 2] if _pos else 0
         else:
             med_gap = sorted(gaps)[len(gaps) // 2] if gaps else 0
-        thr = max(5, mult * med_gap)
+        thr = max(5, mult * med_gap)  # R20-p21 ablation v2b: floor OFF, reclaim v2b only
         cuts = set(i for i, g in enumerate(gaps) if g >= thr)  # R19-2a: ALL qualifying gaps
         groups, cur = [], [subs[0]]
         for i, c in enumerate(subs[1:]):
@@ -363,12 +383,207 @@ def segment_array(img, image_name="", deskew=True):
         return cov / len(subs_u)
 
 
-    def _split_from_subs(subs, x0, y0, subs_u, mult, ref_w):
+    def _reclaim_core(words, core_subs, x0, y0, core_subs_ext=None):
+        """Round 20 track-p21 (b) — dark-core reclaim.
+
+        Root cause (measured on p21, otsu=184 -> dark=0.65*otsu=119 < CORE_THR=140):
+        letters grey 120-140 have a gate dark core (grey<140) but NO dark sub at
+        119, so the split either clips them (word box ends mid-letter -> T1 core
+        sticks out: p21 0.598/0.539/0.525) or drops them entirely (subcov cannot
+        see a sub that does not exist -> T2: "a" of allotted, "ng" of their,
+        whole word "of"). Raising dark to 140 was MEASURED WRONG as a grouping
+        threshold (blob [1693,1569,2028,1600]: 4 groups -> 1 bridged group;
+        blob [555,1684,2028,1724]: "from"+"any" bridged into one group) — so
+        dark stays 119 for GROUPING and the 140-subs are used ONLY here, as a
+        post-grouping coverage check:
+          (1) a 140-sub overlapping exactly ONE word box extends that box to
+              cover the sub (the clipped letter is reclaimed; T1 fixed);
+          (2) a 140-sub overlapping TWO OR MORE boxes is skipped — it bridges
+              a cut, and guessing its side would steal a neighbour's letter;
+          (3) a 140-sub overlapping NO box becomes its own word box
+              ("core-reclaim") if it is word-like (width in [0.5, 3.0]*med_h;
+              height already capped by _extract_subs) and does not overlap an
+              existing box by >50% of its own area.
+        No OCR, no model: the check uses only the page's own darker ink.
+        Returns (words, n_extended, n_orphan_boxes)."""
+        if not core_subs and not core_subs_ext:
+            return words, 0, 0
+        if core_subs_ext is None:
+            core_subs_ext = core_subs
+        if not core_subs:
+            core_subs = core_subs_ext
+        boxes = [list(w["box"]) for w in words]
+        srcs = [w.get("src", "blob-split") for w in words]
+
+        def _xov(a0, a1, b0, b1):
+            return max(0, min(a1, b1) - max(a0, b0))
+        n_ext = 0
+        # Round 20 IoU fix (2026-11-08): the extension uses the ERODED subs
+        # (core_subs_ext), tight to the letter core. The raw 140-subs are puffy
+        # (grey fringe + merged underline/halftone/neighbours) and extending a
+        # box to their full bbox over-extends it by 1-3px, dropping IoU below
+        # 0.9 on May p1 / Aug p8 (the R10m reference hugs the glyph). Eroding
+        # the 140-mask by 1px (3x3) breaks the thin bridges and removes the
+        # fringe, so the extension hugs the glyph. The ORPHANS still use the
+        # ORIGINAL subs (collected below) — eroding would shrink the p21
+        # dropped letters and break the "@" gap-position rule, which both need
+        # the un-eroded subs.
+        # FALLBACK (p21): erosion can DESTROY a fragile light-letter fragment
+        # (a 3px stem erodes to nothing), leaving no eroded sub to extend the
+        # box — the clipped letter's core then sticks out again (T1 returns,
+        # p21 ALLOW->REFUSE). So for each ORIGINAL sub, use the UNION of the
+        # eroded pieces overlapping it; if no eroded piece overlaps it
+        # significantly (>= 50% of the original's area), fall back to the
+        # ORIGINAL sub's bbox so the extension still happens.
+        def _ov_area(a, b):
+            _ox = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+            _oy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+            return _ox * _oy
+        _ext_subs = []
+        for (sx, sy, sw, sh) in core_subs:
+            _ax0, _ay0, _ax1, _ay1 = x0 + sx, y0 + sy, x0 + sx + sw, y0 + sy + sh
+            _parts = []
+            for (ex, ey, ew, eh) in core_subs_ext:
+                _bx0, _by0, _bx1, _by1 = x0 + ex, y0 + ey, x0 + ex + ew, y0 + ey + eh
+                if _ov_area((_ax0, _ay0, _ax1, _ay1), (_bx0, _by0, _bx1, _by1)) > 0:
+                    _parts.append((_bx0, _by0, _bx1, _by1))
+            if _parts:
+                _ux0 = min(p[0] for p in _parts); _uy0 = min(p[1] for p in _parts)
+                _ux1 = max(p[2] for p in _parts); _uy1 = max(p[3] for p in _parts)
+                _ov = _ov_area((_ax0, _ay0, _ax1, _ay1), (_ux0, _uy0, _ux1, _uy1))
+                _orig_area = (_ax1 - _ax0) * (_ay1 - _ay0)
+                if _ov >= 0.5 * _orig_area:
+                    _ext_subs.append((_ux0 - x0, _uy0 - y0, _ux1 - _ux0, _uy1 - _uy0))
+                else:
+                    _ext_subs.append((sx, sy, sw, sh))
+            else:
+                _ext_subs.append((sx, sy, sw, sh))
+        for (sx, sy, sw, sh) in _ext_subs:
+            ax0, ay0, ax1, ay1 = x0 + sx, y0 + sy, x0 + sx + sw, y0 + sy + sh
+            ov = [i for i, b in enumerate(boxes)
+                  if _xov(ax0, ax1, b[0], b[2]) > 0 and _xov(ay0, ay1, b[1], b[3]) > 0]
+            if len(ov) == 1:
+                i = ov[0]
+                nb = [min(boxes[i][0], ax0), min(boxes[i][1], ay0),
+                      max(boxes[i][2], ax1), max(boxes[i][3], ay1)]
+                if nb[3] - nb[1] <= 2.5 * med_h:  # never let reclaim make a tall box
+                    if nb != boxes[i]:
+                        n_ext += 1
+                    boxes[i] = nb
+            # len(ov) >= 2: bridged across a cut, do not guess a side.
+            # len(ov) == 0: not an extension candidate; orphans are collected
+            # from the ORIGINAL subs below, not here.
+        out = []
+        for w, b in zip(words, boxes):
+            nw = dict(w)
+            nw["box"] = b
+            out.append(nw)
+        # Orphan collection from the ORIGINAL (uneroded) subs: a sub overlapping
+        # no (extended) box is an orphan candidate. Using the original subs here
+        # keeps the p21 dropped-letter detection and the "@" gap-position rule
+        # exactly as before.
+        orphans = []
+        for (sx, sy, sw, sh) in core_subs:
+            ax0, ay0, ax1, ay1 = x0 + sx, y0 + sy, x0 + sx + sw, y0 + sy + sh
+            ov = [i for i, b in enumerate(boxes)
+                  if _xov(ax0, ax1, b[0], b[2]) > 0 and _xov(ay0, ay1, b[1], b[3]) > 0]
+            if not ov:
+                orphans.append((ax0, ay0, ax1, ay1))
+        # Round 20 track-p21: cluster orphan subs first — a light letter's core
+        # fragments into thin pieces at 140 (p21 "a": bowl 13px + stem 3px, each
+        # below the 0.5*med_h word-width guard, 3px apart). Merge orphans whose
+        # x-gap is letter-scale (<= the pipeline word-gap floor) with y-overlap,
+        # so the cluster — not the fragment — faces the word-like guards.
+        # Two orphan letters of DIFFERENT words sit a word-gap apart and stay
+        # separate, by the same discriminator the main pipeline uses.
+        # Round 20 track-p21 v2: cluster fragments of ONE letter, which can be
+        # side-by-side ("a" bowl+stem, 3px apart) OR stacked ("g" bowl over its
+        # descender, y-gap 0). Either adjacency merges; two letters of different
+        # words sit a word-gap apart in x (or a full line apart in y) and stay
+        # separate. Single-linkage fixpoint (orphan counts are small).
+        def _touch(a, b):
+            _xgap = max(b[0] - a[2], a[0] - b[2])
+            _ygap = max(b[1] - a[3], a[1] - b[3])
+            _xov = min(a[2], b[2]) - max(a[0], b[0])
+            _yov = min(a[3], b[3]) - max(a[1], b[1])
+            return (_xgap <= max(8, 0.30 * med_h) and _yov > 0) or                (_ygap <= 2 and _xov > 0)
+        _merged = list(orphans)
+        _changed = True
+        while _changed:
+            _changed = False
+            for _i in range(len(_merged)):
+                for _j in range(_i + 1, len(_merged)):
+                    if _touch(_merged[_i], _merged[_j]):
+                        _a, _b = _merged[_i], _merged[_j]
+                        _merged[_i] = (min(_a[0], _b[0]), min(_a[1], _b[1]),
+                                       max(_a[2], _b[2]), max(_a[3], _b[3]))
+                        del _merged[_j]
+                        _changed = True
+                        break
+                if _changed:
+                    break
+        orphans = _merged
+        n_orp = 0
+        for (ax0, ay0, ax1, ay1) in orphans:
+            wpx, hpx = ax1 - ax0, ay1 - ay0
+            if wpx < 0.5 * med_h or wpx > 3.0 * med_h:
+                continue
+            if hpx > 2.5 * med_h:
+                continue
+            area = wpx * hpx
+            if any(_xov(ax0, ax1, b[0], b[2]) * _xov(ay0, ay1, b[1], b[3]) > 0.5 * area
+                   for b in boxes):
+                continue  # mostly inside an existing word: part of it, not its own
+            # Round 20 fix (Aug p1 "@", 2026-11-08): a single symbol sitting in
+            # a word gap is not a dropped word. The "@" of "pgfoils@pgfoils.in"
+            # sits 4px from "pgfoils" and 42px from "pgfoils.in" — letter-close
+            # to one neighbour and far from the other, inside a word-gap span
+            # (61px). A genuinely dropped word fills its slot: both gaps are
+            # word-scale (p21 max 12px), or it sits at a line edge (one side
+            # open). A layout gap (p09: 337px to the left word, span 358px) is
+            # not a word gap — the orphan there is a real word at a section
+            # start and is kept. So skip an orphan only when it has a word
+            # neighbour on BOTH sides, one gap <= 0.5*med_h, the other
+            # > 1.0*med_h, and the neighbour-to-neighbour span <= 3.0*med_h.
+            # (Darkness does NOT separate it: the "@" is dark, IoU 0.93, but so
+            # are 54 real reclaimed letters on p13/p14/p15 — IoU 1.00. The gap
+            # position is the discriminator, not the ink.)
+            _oh = ay1 - ay0
+            _le = None; _rs = None
+            for _b in boxes:
+                if min(ay1, _b[3]) - max(ay0, _b[1]) <= 0.5 * _oh:
+                    continue
+                if _b[2] <= ax0 and (_le is None or _b[2] > _le):
+                    _le = _b[2]
+                elif _b[0] >= ax1 and (_rs is None or _b[0] < _rs):
+                    _rs = _b[0]
+            if _le is not None and _rs is not None:
+                _lg, _rg = ax0 - _le, _rs - ax1
+                if ((_lg <= 0.5 * med_h and _rg > 1.0 * med_h) or
+                        (_rg <= 0.5 * med_h and _lg > 1.0 * med_h)) and \
+                        (_rs - _le) <= 3.0 * med_h:
+                    continue  # symbol in a word gap, not a dropped word
+            out.append({"box": [ax0, ay0, ax1, ay1], "n_comp": 1, "src": "core-reclaim"})
+            boxes.append([ax0, ay0, ax1, ay1])
+            n_orp += 1
+        if n_ext or n_orp:
+            print(f"core-reclaim: extended {n_ext} boxes, +{n_orp} orphan words")
+        return out, n_ext, n_orp
+
+
+    def _split_from_subs(subs, x0, y0, subs_u, mult, ref_w, core_subs=None, core_subs_ext=None):
         """Group subs into word boxes (all-qualifying-gaps + F5) and validate:
         the old geometry/tot_w>=0.5 check (tot_w against ref_w: the blob width
         for a whole-blob split, the row's own span for a row split) AND
         subcov_c >= 0.92 (no uneroded sub left uncovered, up to one small
-        gap-symbol). Returns (words, ok)."""
+        gap-symbol). Returns (words, ok).
+        Round 20 track-p21: if core_subs are given, _reclaim_core runs AFTER
+        validation, ONLY on a split that already passed (see the call site).
+        Measuring first (p21 blob [1437,1328,2030,1359]) showed reclaim-BEFORE-
+        validation backfires: it patched the coverage of a BAD eroded split
+        (2 words for a 6-word line) so subcov passed and the retry never ran.
+        Validation judges the split; reclaim repairs a validated split — it
+        cannot un-merge an over-merge, so it must not vote on validity."""
         groups = _group_subs(subs, mult=mult)
         # 300-DPI FIX F5: merge a lone narrow piece (spaced letter) into its neighbour
         _mg = []
@@ -388,6 +603,7 @@ def segment_array(img, image_name="", deskew=True):
             wx1 = x0 + max(s[0] + s[2] for s in g)
             wy1 = y0 + max(s[1] + s[3] for s in g)
             words.append({"box": [wx0, wy0, wx1, wy1], "n_comp": len(g), "src": "blob-split"})
+
         # validation: the split must cover most of the blob with sane word geometry,
         # otherwise the blob stays dropped (never guessed).
         tot_w = sum(wd["box"][2] - wd["box"][0] for wd in words)
@@ -397,15 +613,19 @@ def segment_array(img, image_name="", deskew=True):
         if ok:
             # R19-2a: ink reconciliation — a split that drops a letter is a failed
             # split even if tot_w passes (erosion destroys letters: Ambawadi "wa").
-            # R19-fix (Aug p1 email, 2026-11-08): == 1.0 is too strict for email
-            # addresses — the "@" symbol sits in the word gap and its inner part
-            # is covered by neither word box, so a CORRECT split scores 13/14 =
+            # R19-fix (Aug p1 email, 2026-11-08) — RESTORED by the Round 20 merge
+            # (missing from the R20 tracks' pre-fix copy): == 1.0 is too strict for
+            # email addresses — the "@" symbol sits in the word gap and its inner
+            # part is covered by neither word box, so a CORRECT split scores 13/14 =
             # 0.929. Threshold 0.92 accepts it while still rejecting the diagnosed
             # bad Raviraj splits (Ambawadi 0.800, Ahmedabad 0.636, p21 0.639) AND the
             # p16-p19 header split (0.9091, 10/11 subs) which otherwise creates a
             # T1-flagged word [1924,396,1999,428] and flips those 4 pages ALLOW->REFUSE.
             # (0.90 was tried first and REGRESSED the gate 17/8 -> 13/12.)
             ok = _subcov_c(subs_u, words, x0, y0) >= 0.92
+        if ok and core_subs:
+            # Round 20 track-p21: reclaim ONLY a validated split (see docstring).
+            words, _n_ext, _n_orp = _reclaim_core(words, core_subs, x0, y0, core_subs_ext)
         return words, ok
 
 
@@ -425,6 +645,17 @@ def segment_array(img, image_name="", deskew=True):
         subs_u = _extract_subs(ink)
         if not subs_u:
             return [], 0
+        # Round 20 track-p21 (b): dark-core subs at the gate's CORE_THR (140),
+        # for the reclaim check in _split_from_subs (grouping still uses dark).
+        _core_ink = gray[y0:y1, x0:x1] < 140
+        _core_row = _core_ink.sum(axis=1)
+        _core_ink = _core_ink.copy()
+        _core_ink[_core_row > 0.90 * _core_ink.shape[1], :] = False
+        core_subs = _extract_subs(_core_ink, area_floor=20, h_floor=0.25)
+        # Round 20 IoU fix: eroded copy of the 140-subs for the reclaim EXTENSION
+        # only (tight to the letter core; breaks underline/halftone bridges).
+        # Orphans still use the original core_subs (see _reclaim_core).
+        core_subs_ext = _extract_subs(cv2.erode(_core_ink.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool), area_floor=20, h_floor=0.25)
         # V4-6 erosion fallback: in B&W the halftone dither bridges bold letters
         # into one wide piece. A 3x3 erosion breaks 1px bridges; letters survive.
         # Trigger: any sub wider than 2.5*med_h, or any negative (overlapping) gap.
@@ -448,7 +679,8 @@ def segment_array(img, image_name="", deskew=True):
                 subs = subs_e
                 _eroded = True
         words, ok = _split_from_subs(subs, x0, y0, subs_u, mult=1.5 if _eroded else 2.0,
-                                     ref_w=(x1 - x0))
+                                     ref_w=(x1 - x0), core_subs=core_subs,
+                                     core_subs_ext=core_subs_ext)
         if ok:
             return words, len(subs)
         # R19-2a retry: erosion destroyed letters (the hole it leaves becomes a
@@ -458,7 +690,8 @@ def segment_array(img, image_name="", deskew=True):
         # return [] as before (v3 path keeps the whole word box; singleton drops).
         if _eroded:
             words2, ok2 = _split_from_subs(subs_u, x0, y0, subs_u, mult=2.0,
-                                           ref_w=(x1 - x0))
+                                           ref_w=(x1 - x0), core_subs=core_subs,
+                                           core_subs_ext=core_subs_ext)
             if ok2:
                 print(f"blob-split retry (uneroded): {list(bbox)} -> {len(words2)} words")
                 return words2, len(subs_u)
@@ -582,7 +815,7 @@ def segment_array(img, image_name="", deskew=True):
         before = len(words)
         blobs = [r["bbox"] for r in rescued]
         words = [wd for wd in words
-                 if wd.get("src") in ("blob-split", "rhythm-dp") or not any(
+                 if wd.get("src") in ("blob-split", "rhythm-dp", "core-reclaim") or not any(
                      wd["box"][0] >= b[0] and wd["box"][1] >= b[1]
                      and wd["box"][2] <= b[2] and wd["box"][3] <= b[3] for b in blobs)]
         print(f"suppressed {before - len(words)} fragment words inside rescued blobs")
@@ -655,8 +888,24 @@ def segment_array(img, image_name="", deskew=True):
         rows_u, means_u = _cluster_rows(subs_u, _row_gap)
         if len(rows_u) < 2:
             return [], len(subs_u)
-        # assign each split-sub to the nearest row (by y-centre)
+        # Round 20 track-p21 (b): dark-core subs for the per-row reclaim.
+        _core_ink = gray[y0:y1, x0:x1] < 140
+        _core_row = _core_ink.sum(axis=1)
+        _core_ink = _core_ink.copy()
+        _core_ink[_core_row > 0.90 * _core_ink.shape[1], :] = False
+        _core_subs_all = _extract_subs(_core_ink, area_floor=20, h_floor=0.25)
+        # Round 20 IoU fix: eroded copy for the reclaim EXTENSION only.
+        _core_subs_all_ext = _extract_subs(cv2.erode(_core_ink.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool), area_floor=20, h_floor=0.25)
         _cy = lambda s: s[1] + s[3] / 2
+        _core_rows = [[] for _ in rows_u]
+        for _s in _core_subs_all:
+            _j = min(range(len(means_u)), key=lambda j: abs(_cy(_s) - means_u[j]))
+            _core_rows[_j].append(_s)
+        _core_rows_ext = [[] for _ in rows_u]
+        for _s in _core_subs_all_ext:
+            _j = min(range(len(means_u)), key=lambda j: abs(_cy(_s) - means_u[j]))
+            _core_rows_ext[_j].append(_s)
+        # assign each split-sub to the nearest row (by y-centre)
         rows = [[] for _ in rows_u]
         for _s in subs:
             _j = min(range(len(means_u)), key=lambda j: abs(_cy(_s) - means_u[j]))
@@ -671,14 +920,16 @@ def segment_array(img, image_name="", deskew=True):
         if any(len(_r) < 3 for _r in rows):
             return [], len(subs_u)
         words = []
-        for _row, _row_u in zip(rows, rows_u):
+        for _ri, (_row, _row_u) in enumerate(zip(rows, rows_u)):
             if not _row:
                 return [], len(subs_u)
             _row_sorted = sorted(_row, key=lambda s: s[0])
             _row_u_sorted = sorted(_row_u, key=lambda s: s[0])
             _ref_w = max(s[0] + s[2] for s in _row_u_sorted) - min(s[0] for s in _row_u_sorted)
             _w, _ok = _split_from_subs(_row_sorted, x0, y0, _row_u_sorted,
-                                       mult=1.5 if _eroded else 2.0, ref_w=_ref_w)
+                                       mult=1.5 if _eroded else 2.0, ref_w=_ref_w,
+                                       core_subs=_core_rows[_ri],
+                                       core_subs_ext=_core_rows_ext[_ri])
             if not _ok:
                 return [], len(subs_u)
             words.extend(_w)
@@ -689,7 +940,7 @@ def segment_array(img, image_name="", deskew=True):
 
     split_boxes, out, split_done = [], [], 0
     for wd in words:
-        if wd.get("src") in ("blob-split", "rhythm-dp"):
+        if wd.get("src") in ("blob-split", "rhythm-dp", "core-reclaim"):
             out.append(wd)
             continue
         x0, y0, x1, y1 = wd["box"]
@@ -706,7 +957,15 @@ def segment_array(img, image_name="", deskew=True):
             # [553,1898,975,2037], 5 lines in one span, font_px 139 — the old
             # h <= 3*med_h gate never split it, 48 real line-words F3-dropped).
             parts, n_sub = _row_split_blob((x0, y0, x1, y1))
-        if parts is not None and len(parts) >= 2:
+        # Round 20 track-p21 v2c: an orphan must not vote to replace a whole
+        # word box — it is a fragment, not a word. Measured on p01: "Hi-Tech"
+        # (1 real word + 1 orphan "c") and the email "matapltd@matagroup.in"
+        # (1 real word + 3 orphans) were replaced by their parts, dropping the
+        # "h" and "p.in" (2 NEW T2s on a page that was already REFUSE). The
+        # whole box already covers the orphan's letter; replace only when >=2
+        # REAL words result.
+        _n_real = sum(1 for p in parts if p.get("src") != "core-reclaim") if parts else 0
+        if parts is not None and _n_real >= 2:
             print(f"split merged word box {wd['box']} -> {len(parts)} words ({n_sub} pieces)")
             for p in parts:
                 out.append({"box": p["box"], "line": wd["line"],
@@ -716,7 +975,7 @@ def segment_array(img, image_name="", deskew=True):
             split_done += 1
             continue
         out.append(wd)
-    words = [wd for wd in out if wd.get("src") in ("blob-split", "rhythm-dp")
+    words = [wd for wd in out if wd.get("src") in ("blob-split", "rhythm-dp", "core-reclaim")
              or not any(_inside(wd["box"], b) for b in split_boxes)]
     print(f"merged word boxes split: {split_done}")
 
@@ -783,7 +1042,7 @@ def segment_array(img, image_name="", deskew=True):
 
     _dashed, _ndash = [], 0
     for wd in words:
-        if wd.get("src") in ("blob-split", "rhythm-dp"):
+        if wd.get("src") in ("blob-split", "rhythm-dp", "core-reclaim"):
             _dashed.append(wd)
             continue
         _parts = _dash_split(wd)
@@ -799,6 +1058,7 @@ def segment_array(img, image_name="", deskew=True):
     print(f"words segmented: {len(words)}")
     return {"image": image_name, "method": "connected-components, no recognition (v5-300: v4-300 + R6 cluster-anchor signature zone; R19 merge: logo rect per-page + sigy anchor check + top2a all-cuts/subcov/row-split + top2b rhythm-DP fallback)",
             "median_char_h_px": med_h, "sig_y_detected": sig_y,
+            "r20_p21_hybrid": "dark-core reclaim v2c ONLY, no gap floor (CORE_THR 140, core area_floor 20 + h_floor 0.25, 2D orphan clustering, V3 orphan-vote fix)",
             "logo_rect_detected": list(LOGO) if LOGO is not None else None,
             "rescued_blobs": rescued, "words": words}
 
