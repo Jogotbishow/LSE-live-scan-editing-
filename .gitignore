@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.log
+
+# Virtualenvs / editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Databases (the delivery record + audit log are local by design;
+# never commit a database that holds real deliveries)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*-wal
+*-shm
+
+# Generated demo outputs (binary — regenerate, don't commit).
+# demo/make_synthetic.py rebuilds these from scratch; only the
+# ground-truth JSON (UTF-8 text) is checked in.
+demo/*.pdf
+demo/*.png
+
+# Generated work products (never commit)
+*-edited.pdf
+*.edited.pdf
+live-page*.html
+live-scan-page*.html
+label/verify-out/
+lse-work/
+dev-data/
+out/
+output/
+
+# Real supplier/customer documents must NEVER enter this repo.
+# If you test on a real scan, keep it outside the repo entirely.
+# (No filename pattern can catch every real document — the rule is:
+#  only the generated synthetic sample, or a fully anonymised page.)
+private/
+real-data/
+
+# Secrets
+.env
+*.pem
+*.key
+*.p12
+credentials*.json

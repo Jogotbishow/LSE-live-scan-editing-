@@ -1,0 +1,41 @@
+# LSE — Live-Scan Editing
+# Core runtime dependencies (loose pins on purpose: the engine is
+# developed against the current releases, not frozen ones).
+# No OCR anywhere in the edit path.
+
+# Word segmentation (OpenCV connected components) + inpainting.
+# Headless build: no GUI needed. On Windows the -headless wheel exists
+# and is the one to install; opencv-python (with GUI) works too.
+opencv-python-headless>=5.0
+numpy>=2.0
+Pillow>=11.0
+
+# PDF render (300 DPI) + PDF write-back. The scan is never re-encoded:
+# the original page bytes are embedded verbatim in the edited PDF.
+PyMuPDF>=1.24
+
+# Document DNA: the replacement font is traced from the document's own
+# glyphs (vtracer, MIT OR Apache-2.0) and inspected with fontTools.
+vtracer>=1.0.0a4
+fonttools>=4.40
+
+# Permanent delivery record: SQLite with SQLCipher encryption + a
+# hash-chained audit log. Windows wheels exist for sqlcipher3
+# (verified: sqlcipher3-0.6.5-cp312-cp312-win_amd64.whl).
+sqlcipher3>=0.6
+
+# Demo generator only (demo/make_synthetic.py): builds the synthetic
+# ACME sample PDF. Not needed to run the engine on your own scans.
+reportlab>=4.0
+
+# Tests only.
+pytest>=8.0
+
+# Verification scripts only (visual probes). After installing, run:
+#   python -m playwright install chromium
+playwright>=1.40
+
+# Optional, drafts/automation ONLY — RapidOCR is never in the edit path.
+# Editing needs no recognition at all; OCR is used only where a draft
+# suggestion is explicitly requested, and a human always verifies it.
+rapidocr-onnxruntime>=1.4

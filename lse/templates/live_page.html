@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="bn"><head><meta charset="utf-8">
+<title>Live-Scan — PG Foils COA (পাতা ১) — OCR ছাড়া লাইভ এডিট</title>
+<style>
+  @font-face { font-family:'PGCloneDNA-Regular'; src:url(data:font/ttf;base64,__DNAFONT_REG__) format('truetype'); }
+  @font-face { font-family:'PGCloneDNA-Bold'; src:url(data:font/ttf;base64,__DNAFONT_BOLD__) format('truetype'); }
+  body { margin:0; background:#e8e4dc; font-family:'Noto Sans Bengali',sans-serif; }
+  .bar { position:sticky; top:0; z-index:10; background:#1f2937; color:#fff; padding:10px 16px;
+         display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .bar b { font-size:16px; } .bar span { font-size:13px; opacity:.85; }
+  .bar button { background:#2563eb; color:#fff; border:0; border-radius:6px; padding:8px 14px;
+         font-size:14px; cursor:pointer; } .bar button.ghost { background:#4b5563; }
+  .bar button.on { background:#059669; }
+  .bar button.save { background:#059669; font-weight:bold; }
+  .labelcard { max-width:__W__px; margin:0 auto 24px; background:#fff; border-radius:8px; padding:14px 18px;
+          font-size:14px; line-height:1.7; box-shadow:0 2px 10px rgba(0,0,0,.12); display:none; }
+  .labelcard.open { display:block; }
+  .labelcard .label { width:100mm; min-height:150mm; margin:6px auto; background:#fff;
+          border:2.5px solid #000; padding:10px 12px; color:#000; }
+  .labelcard .label h2 { text-align:center; font-size:20px; letter-spacing:2px; margin:2px 0 4px;
+          border-bottom:2px solid #000; padding-bottom:6px; }
+  .labelcard .label .sub { text-align:center; font-size:12px; margin:0 0 8px; }
+  .labelcard .label .item { font-size:19px; font-weight:bold; text-align:center; margin:8px 0 2px; }
+  .labelcard .label .pack { text-align:center; font-size:13px; margin:0 0 10px; }
+  .labelcard .label table { width:100%; border-collapse:collapse; font-size:14px; }
+  .labelcard .label td { border:1px solid #000; padding:5px 7px; vertical-align:top; }
+  .labelcard .label td.k { width:38%; font-weight:bold; background:#f3f4f6; }
+  .labelcard .label td.from-coa { background:#fef3c7; }
+  .labelcard .label .src { font-size:12.5px; margin:10px 0 4px; line-height:1.5; }
+  .labelcard .label .stamp { margin-top:12px; border:2px dashed #15803d; color:#15803d; text-align:center;
+          font-weight:bold; font-size:17px; letter-spacing:3px; padding:8px 4px; }
+  .labelcard .label .sign { display:flex; justify-content:space-between; margin-top:16px; font-size:13px; }
+  .labelcard .label .sign div { border-top:1px solid #000; padding-top:3px; width:45%; text-align:center; }
+  .labelcard .dl { text-align:center; font-size:15px; }
+  .labelcard .dl a { color:#15803d; font-weight:bold; }
+  .labelcard .lc-note { font-size:12.5px; color:#555; }
+  .page { position:relative; width:__W__px; height:__H__px; margin:18px auto; background:#fff;
+          box-shadow:0 6px 30px rgba(0,0,0,.35); }
+  .page img.bg { position:absolute; inset:0; width:100%; height:100%;
+          /* The PDF stores this image upside down (its content stream draws it
+             with a 180-degree rotation matrix); the browser applies the same
+             rotation here. A 180-degree CSS rotation is a pixel permutation,
+             exact, no resampling. See build_page.py header. */ transform: rotate(180deg); }
+  .wd { position:absolute; cursor:text; outline:none; background:transparent; border-radius:2px;
+        font-family:'PGCloneDNA-Regular','Liberation Sans',sans-serif;
+        display:flex; align-items:flex-end; overflow:visible; white-space:nowrap; }
+  .wd:hover { outline:1.5px dashed rgba(37,99,235,.75); background:rgba(37,99,235,.08); }
+  .wd.show { outline:1px solid rgba(37,99,235,.35); }
+  .wd.tiny { outline:1.5px solid #d97706; }
+  .page.show-conf .wd[data-conf="confident"] { outline:1.5px solid rgba(22,163,74,.85); }
+  .page.show-conf .wd[data-conf="check"] { outline:1.5px solid rgba(217,119,6,.9); }
+  .page.show-conf .wd[data-conf="unsure"] { outline:1.5px solid rgba(220,38,38,.9); }
+  .legend { font-size:13px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 3px 0 10px; vertical-align:-1px; }
+  .wd.on { background-image:var(--clean); background-repeat:no-repeat; z-index:5;
+           box-shadow:0 0 0 1.5px #2563eb; }
+  .wd.done { background-image:var(--clean); background-repeat:no-repeat; }
+  .wd.on:empty::before { content:'টাইপ করুন…'; color:#9ca3af; font-style:italic; }
+  .wd.manual { background-image:var(--clean-manual); background-repeat:no-repeat; }
+  .wd.stamp { cursor:not-allowed; }
+  .wd.stamp:hover { outline:1.5px dashed rgba(220,38,38,.85); background:rgba(220,38,38,.08); }
+  #stampNote { display:none; background:#dc2626; color:#fff; border-radius:6px; padding:6px 10px; font-size:13px; }
+  #stampNote.show { display:inline-block; }
+  .draw-rect { position:absolute; border:1.5px dashed #059669; background:rgba(5,150,105,.12); z-index:6; pointer-events:none; }
+  .note { max-width:__W__px; margin:0 auto 24px; background:#fff; border-radius:8px; padding:14px 18px;
+          font-size:14px; line-height:1.7; box-shadow:0 2px 10px rgba(0,0,0,.12); }
+  .note code { background:#f3f4f6; padding:1px 6px; border-radius:4px; }
+  .fontpanel { max-width:__W__px; margin:0 auto 12px; background:#fff; border-radius:8px; padding:10px 14px;
+          font-size:14px; box-shadow:0 2px 10px rgba(0,0,0,.12); display:none; }
+  .fontpanel.open { display:block; }
+  .fontpanel .fp-opt { display:inline-block; margin:6px 8px 0 0; padding:6px 12px; border:1.5px solid #d1d5db;
+          border-radius:6px; cursor:pointer; background:#f9fafb; min-width:120px; text-align:center; }
+  .fontpanel .fp-opt:hover { border-color:#2563eb; }
+  .fontpanel .fp-opt.sel { border-color:#059669; background:#ecfdf5; }
+  .fontpanel .fp-opt small { display:block; font-size:11px; color:#6b7280; font-family:sans-serif; }
+</style></head><body>
+<div class="bar">
+  <b>🔴 Live-Scan — PG Foils সাপ্লায়ার COA, পাতা ১</b>
+  <span>স্ক্যানটাই পাতা। যেকোনো শব্দে ক্লিক করুন → আগের লেখা মুছে যাবে → নতুন লেখা টাইপ করুন। OCR লাগে না।</span>
+  <button id="demoBtn">▶ ডেমো এডিট চালান</button>
+  <button id="saveBtn" class="save">💾 সেভ করুন → লেবেল</button>
+  <button id="boxBtn" class="ghost">শব্দের বাক্স দেখান</button>
+  <button id="confBtn" class="ghost">আস্থা দেখান</button>
+  <button id="manualBtn" class="ghost">✎ হাতের লেখা বাক্স আঁকুন</button>
+  <button id="resetBtn" class="ghost">রিসেট</button>
+  <span id="stampNote">⛔ স্ট্যাম্প অঞ্চল — এডিট করা যাবে না</span>
+</div>
+<div class="page" id="page">
+  <img class="bg" src="__ORIG__" alt="PG Foils COA scan page 1">
+</div>
+<div class="fontpanel" id="fontPanel">
+  <b>ফন্ট বাছুন</b> — এই পাতার ছাপার সঙ্গে সবচেয়ে মিল (অফলাইন matcher দিয়ে মাপা, সেরা ৩টি):
+  <span id="fontOpts"></span>
+  <div style="font-size:12px; color:#6b7280; margin-top:4px;">শুধু OFL ফন্ট + এই ডকুমেন্টের নিজের DNA ক্লোন — কোনো proprietary ফন্ট নয়, কোনো ক্লাউড নয়।</div>
+</div>
+<div class="labelcard" id="labelCard">
+  <b>✅ পাতা সেভ হয়েছে — এই পাতার নিজের লেবেল</b>
+  <span style="font-size:13px; color:#92400e;">খসড়া লেবেল — মানগুলো এই পাতারই; LBL নম্বর ডাটাবেজে রেকর্ড হলে পাবে।</span>
+  <div class="label">
+    <h2>PACKING LABEL</h2>
+    <p class="sub">Supplier foil — auto-filled from the saved COA page (LSE, per-page label)</p>
+    <p class="item" id="lcItem"></p>
+    <p class="pack">Packfirm Limited</p>
+    <table>
+      <tr><td class="k">Item</td><td class="from-coa" id="lcItem2"></td></tr>
+      <tr><td class="k">Customer</td><td class="from-coa">Packfirm Limited</td></tr>
+      <tr><td class="k">Batch / Lot No.</td><td class="from-coa"><b id="lcLot"></b></td></tr>
+      <tr><td class="k">WIDTH (<span id="lcPageLabel"></span>)</td><td class="from-coa"><b id="lcWidth"></b></td></tr>
+      <tr><td class="k">Source COA page</td><td id="lcSrc"></td></tr>
+      <tr><td class="k">Label</td><td id="lcNum"></td></tr>
+    </table>
+    <p class="src" id="lcSrcLine"></p>
+    <div class="stamp">QC PASSED</div>
+    <div class="sign"><div>Prepared By</div><div>Authorised By</div></div>
+  </div>
+  <p class="dl">⬇ <a id="lcDownloadLabel" href="#">লেবেল ডাউনলোড (HTML)</a> &nbsp;·&nbsp; <a id="lcDownloadEdits" href="#">সেভ করা এডিট ডাউনলোড (JSON)</a></p>
+  <p class="lc-note">এই লেবেল এই পাতার সেভ করা মান দিয়ে ভরা — অন্য পাতার মান এখানে আসে না। ড্রাইভার এডিট JSON থেকে ডেলিভারি রেকর্ড করে নম্বরসহ লেবেল দেবে।</p>
+</div>
+<div class="note">
+  <b>এটা কীভাবে কাজ করে (OCR নয়):</b> পাতার প্রতিটি শব্দের <i>অবস্থান</i> শুধু ছবি বিশ্লেষণে (connected components) পাওয়া হয়েছে — অক্ষর পড়া হয়নি।
+  ক্লিক করলে সেই শব্দের পিক্সেল পরিষ্কার (inpainted) ব্যাকগ্রাউন্ড দিয়ে ঢেকে যায়, আর ওই জায়গাতেই মূল ফন্টের মাপে নতুন লেখা বসে।
+  <b>ডেমো এডিট:</b> Lot No. <code>206/7 → 207/9</code> এবং WIDTH-র Observation <code>780.0 → 781.5</code>।
+  নীল সই আর লোগোতে স্বয়ংক্রিয় বাক্স নেই (হাতের লেখা — auto word-split করা হয় না); সইয়ের ওপর লিখতে চাইলে উপরের "✎ হাতের লেখা বাক্স আঁকুন" বোতামে বাক্স আঁকুন — সেই বাক্সের নিচে সই মুছে পরিষ্কার কাগজ থাকবে।
+  <br><b>সত্যিটা:</b> পাতার ব্যাকগ্রাউন্ড ১০০% আসল স্ক্যান (by construction)। শব্দের বাক্স __NWORDS__টি — segmentation-এর নির্ভুলতা রিপোর্টে মাপা আছে।
+  <br><span class="legend"><b>আস্থা (৩ স্তর, শতাংশ নয়):</b><i style="background:#16a34a"></i>সবুজ = দুই detector একমত (আস্থা) <i style="background:#d97706"></i>হলুদ = যাচাই করুন <i style="background:#dc2626"></i>লাল = অনিশ্চিত — "আস্থা দেখান" বোতামে রং দেখা যায়।</span>
+</div>
+<script>
+const WORDS = __WORDS__;
+const DEMO = __DEMO__;
+const PAGE_META = __PAGE_META__;
+const SHORTLIST = __SHORTLIST__;
+const FONTMAP = {
+  'Document DNA Regular': {family: "'PGCloneDNA-Regular','Liberation Sans',sans-serif", weight: '400'},
+  'Document DNA Bold': {family: "'PGCloneDNA-Bold','Liberation Sans',sans-serif", weight: '700'},
+  'Liberation Serif': {family: "'Liberation Serif', serif", weight: '400'},
+  'Liberation Serif Bold': {family: "'Liberation Serif', serif", weight: '700'},
+  'Liberation Sans': {family: "'Liberation Sans', sans-serif", weight: '400'},
+  'Liberation Sans Bold': {family: "'Liberation Sans', sans-serif", weight: '700'},
+};
+const S = __S__;
+const CLEAN = "__CLEAN__";
+const CLEAN_MANUAL = "__CLEAN_MANUAL__";
+const page = document.getElementById('page');
+page.style.setProperty('--clean', 'url(' + CLEAN + ')');
+page.style.setProperty('--clean-manual', 'url(' + CLEAN_MANUAL + ')');
+const meas = document.createElement('canvas').getContext('2d');
+function fitWidth(el) {
+  // scale font-size so the typed text is as wide as the original word box,
+  // clamped to +/-25% of the initial size. Always recomputed from the
+  // initial size (dataset.fs0), never from the already-fitted size.
+  // v6 (step 9f): the DNA webfonts load async; measuring before they are
+  // ready uses the fallback (Liberation Sans) width, so the fitted size
+  // is wrong once DNA loads (Lot "207/9" came out 24% too wide: the
+  // fallback measured ~33px, DNA renders 41px at the same size). If fonts
+  // are still loading, re-run after document.fonts.ready — the recompute
+  // is from fs0, so the deferred run is safe and idempotent.
+  if (document.fonts && document.fonts.status !== 'loaded') {
+    document.fonts.ready.then(() => fitWidth(el));
+  }
+  const t = el.textContent;
+  const fs0 = parseFloat(el.dataset.fs0);
+  if (!t.trim()) { el.style.fontSize = fs0 + 'px'; return; }
+  const cs = getComputedStyle(el);
+  meas.font = cs.fontWeight + ' ' + fs0 + 'px ' + cs.fontFamily;
+  const tw = meas.measureText(t).width;
+  // v6 (step 9f, Round 6): aim at 98% of the box, not 100%. The DNA clone is
+  // UNHINTED (traced outlines, no TrueType instructions), and Chromium /
+  // FreeType snaps its advances to whole pixels — measured: every
+  // measureText result is an integer, up to +1.8px off the advance-based
+  // width at ~12px sizes (e.g. "305/7" true 33.19px renders 35px). Aiming
+  // at 100% lets the rounded width overshoot the box by up to ~6% (the
+  // May Lot check measured 1.06 vs the 1.05 limit, true width 1.006).
+  // A 3% margin absorbs the snap noise and is invisible (0.4px at 12px).
+  // Production follow-up (step 10): hint the fonts with ttfautohint so the
+  // advances measure fractionally like Liberation's, then revisit this.
+  const bw = parseFloat(el.style.width) * 0.98;
+  if (!tw || !bw) return;
+  let f = fs0 * bw / tw;
+  // R11C (Track C, Round 11): NO shrink floor. The box is a hard
+  // constraint (document fidelity); the font size is soft. The old 0.60
+  // floor (Round 3, preserving the 0.75 absolute floor) made any long
+  // enough replacement overflow past the cell border (measured: at 0.60,
+  // May WIDTH '12345678.90' overflows +41 scan px, width 1.45). Measured
+  // on staging: no-floor fits every tested replacement up to 14 chars
+  // (width_ratio <= 1.055, worst case May WIDTH bold). Text shrunk below
+  // 0.40x is flagged amber instead of silently spilling: the squeeze
+  // stays visible to the user. The ceiling stays 1.25 (no measured case
+  // binds on it).
+  f = Math.min(1.25 * fs0, f);
+  el.classList.toggle('tiny', f < 0.40 * fs0);
+  el.style.fontSize = f + 'px';
+}
+WORDS.forEach((w, i) => {
+  const d = document.createElement('div');
+  d.className = 'wd' + (w.stamp ? ' stamp' : ''); d.dataset.i = i; d.dataset.conf = w.conf || 'check';
+  d.style.left = (w.x * S) + 'px'; d.style.top = (w.y * S) + 'px';
+  d.style.width = (w.w * S) + 'px'; d.style.height = (w.h * S) + 'px';
+  d.style.fontSize = (w.fs * S) + 'px';
+  d.dataset.fs0 = (w.fs * S) + '';
+  d.style.fontWeight = w.bold ? '700' : '400';
+  // v6 (step 9f): each span defaults to its WEIGHT-MATCHED production DNA
+  // font (Regular for body, Bold for title/header, from the v3 stroke-ratio
+  // bold flag); characters the clone lacks fall back to Liberation Sans
+  // at the same weight via the font stack. The shortlist panel can change
+  // this per span (dataset.font tracks the choice).
+  d.style.fontFamily = w.bold ? "'PGCloneDNA-Bold','Liberation Sans',sans-serif"
+                              : "'PGCloneDNA-Regular','Liberation Sans',sans-serif";
+  d.dataset.font = w.bold ? 'Document DNA Bold' : 'Document DNA Regular';
+  d.style.color = w.color;
+  d.style.paddingBottom = (w.pb || 0) + 'px';
+  d.style.backgroundSize = (1653 * S) + 'px ' + (2323 * S) + 'px';
+  d.style.backgroundPosition = (-w.x * S) + 'px ' + (-w.y * S) + 'px';
+  d.contentEditable = 'false'; d.spellcheck = false;
+  d.addEventListener('click', () => {
+    if (d.classList.contains('stamp')) {
+      const n = document.getElementById('stampNote');
+      n.classList.add('show');
+      setTimeout(() => n.classList.remove('show'), 2500);
+      return;
+    }
+    activate(d);
+  });
+  d.addEventListener('input', () => { fitWidth(d); refreshFontPanelText(d); });
+  page.appendChild(d);
+});
+function activate(d) {
+  document.querySelectorAll('.wd.on').forEach(o => { if (o !== d) { o.classList.remove('on'); o.contentEditable = 'false'; if (o.textContent.trim()) o.classList.add('done'); else if (o.dataset.manual) o.remove(); else o.classList.remove('done'); } });
+  d.classList.add('on'); d.contentEditable = 'true'; d.focus();
+  if (!d.dataset.touched) { d.textContent = ''; d.dataset.touched = '1'; }
+  showFontPanel(d);
+}
+function refreshFontPanelText(d) {
+  const sample = d.textContent.trim() || 'Ag 123';
+  document.querySelectorAll('#fontOpts .fp-opt').forEach(o => {
+    const t = o.querySelector('span');
+    if (t) t.textContent = sample;
+  });
+}
+function showFontPanel(d) {
+  const panel = document.getElementById('fontPanel');
+  const opts = document.getElementById('fontOpts');
+  const sample = d.textContent.trim() || 'Ag 123';
+  opts.innerHTML = '';
+  SHORTLIST.forEach((s, i) => {
+    const fm = FONTMAP[s.font] || {family: 'serif', weight: '400'};
+    const b = document.createElement('span');
+    b.className = 'fp-opt' + (d.dataset.font === s.font ? ' sel' : '');
+    b.style.fontFamily = fm.family; b.style.fontWeight = fm.weight;
+    b.style.fontSize = '20px';
+    const cur = d.dataset.font || 'Liberation Serif';
+    if (cur === s.font) b.classList.add('sel');
+    b.innerHTML = '';
+    const t = document.createElement('span'); t.textContent = sample;
+    const sm = document.createElement('small');
+    sm.textContent = s.font + ' (মিল ' + s.mean_iou + ')';
+    sm.style.fontFamily = 'sans-serif'; sm.style.fontWeight = '400';
+    b.appendChild(t); b.appendChild(sm);
+    b.addEventListener('click', () => {
+      d.dataset.font = s.font;
+      d.style.fontFamily = fm.family; d.style.fontWeight = fm.weight;
+      fitWidth(d);
+      opts.querySelectorAll('.fp-opt').forEach(o => o.classList.remove('sel'));
+      b.classList.add('sel');
+    });
+    opts.appendChild(b);
+  });
+  panel.classList.add('open');
+}
+document.getElementById('demoBtn').addEventListener('click', () => {
+  const run = (t) => {
+    const el = [...document.querySelectorAll('.wd')].find(e => {
+      const r = e.getBoundingClientRect(), p = page.getBoundingClientRect();
+      const cx = (parseFloat(e.style.left) + parseFloat(e.style.width) / 2) / S;
+      const cy = (parseFloat(e.style.top) + parseFloat(e.style.height) / 2) / S;
+      return Math.abs(cx - (t.x + t.w / 2)) < 12 && Math.abs(cy - (t.y + t.h / 2)) < 12;
+    });
+    if (el) { activate(el); el.textContent = t.new; fitWidth(el); refreshFontPanelText(el); }
+  };
+  run(DEMO.lot); setTimeout(() => run(DEMO.width), 600);
+});
+let boxes = false;
+document.getElementById('boxBtn').addEventListener('click', (e) => {
+  boxes = !boxes;
+  document.querySelectorAll('.wd').forEach(d => d.classList.toggle('show', boxes));
+  e.target.textContent = boxes ? 'বাক্স লুকান' : 'শব্দের বাক্স দেখান';
+  e.target.classList.toggle('on', boxes);
+});
+let confShown = false;
+document.getElementById('confBtn').addEventListener('click', (e) => {
+  confShown = !confShown;
+  page.classList.toggle('show-conf', confShown);
+  e.target.textContent = confShown ? 'আস্থা লুকান' : 'আস্থা দেখান';
+  e.target.classList.toggle('on', confShown);
+});
+if (new URLSearchParams(location.search).has('conf')) { setTimeout(() => document.getElementById('confBtn').click(), 200); }
+// ---- Round 2 step 8a: manual-box mode (handwriting) ----
+// Draw a box over a handwritten region (e.g. a signature): the box becomes
+// an editable span with the SAME .done behaviour, but its background is the
+// manual clean layer (signatures inpainted), so typed text never doubles
+// over the original handwriting. Signatures stay excluded by default:
+// no automatic box is ever made there — only a box the user draws.
+// An empty manual box removed on deactivation returns the original.
+let drawMode = false, drawStart = null, drawRect = null;
+document.getElementById('manualBtn').addEventListener('click', (e) => {
+  drawMode = !drawMode;
+  e.target.textContent = drawMode ? '✎ আঁকা বন্ধ করুন' : '✎ হাতের লেখা বাক্স আঁকুন';
+  e.target.classList.toggle('on', drawMode);
+  page.style.cursor = drawMode ? 'crosshair' : '';
+});
+page.addEventListener('mousedown', (e) => {
+  if (!drawMode || e.target.closest('.wd')) return;
+  const r = page.getBoundingClientRect();
+  drawStart = {x: e.clientX - r.left, y: e.clientY - r.top};
+  drawRect = document.createElement('div');
+  drawRect.className = 'draw-rect';
+  drawRect.style.left = drawStart.x + 'px'; drawRect.style.top = drawStart.y + 'px';
+  page.appendChild(drawRect);
+  e.preventDefault();
+});
+page.addEventListener('mousemove', (e) => {
+  if (!drawStart || !drawRect) return;
+  const r = page.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  drawRect.style.left = Math.min(drawStart.x, x) + 'px';
+  drawRect.style.top = Math.min(drawStart.y, y) + 'px';
+  drawRect.style.width = Math.abs(x - drawStart.x) + 'px';
+  drawRect.style.height = Math.abs(y - drawStart.y) + 'px';
+});
+page.addEventListener('mouseup', (e) => {
+  if (!drawStart || !drawRect) return;
+  const r = page.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const x0 = Math.min(drawStart.x, x), y0 = Math.min(drawStart.y, y);
+  const w = Math.abs(x - drawStart.x), h = Math.abs(y - drawStart.y);
+  drawRect.remove(); drawRect = null; drawStart = null;
+  if (w < 12 || h < 8) return; // too small: cancel, original untouched
+  createManualBox(x0, y0, w, h);
+});
+function createManualBox(dx, dy, dw, dh) {
+  const d = document.createElement('div');
+  d.className = 'wd manual'; d.dataset.manual = '1';
+  d.style.left = dx + 'px'; d.style.top = dy + 'px';
+  d.style.width = dw + 'px'; d.style.height = dh + 'px';
+  const fs = dh / 0.85;
+  d.style.fontSize = fs + 'px'; d.dataset.fs0 = fs + '';
+  d.style.fontWeight = '400';
+  d.style.fontFamily = "'PGCloneDNA-Regular','Liberation Sans',sans-serif";
+  d.dataset.font = 'Document DNA Regular';
+  d.style.color = '#111111';
+  d.style.backgroundSize = __W__ + 'px ' + __H__ + 'px';
+  d.style.backgroundPosition = (-dx) + 'px ' + (-dy) + 'px';
+  d.contentEditable = 'false'; d.spellcheck = false;
+  d.addEventListener('click', (ev) => { ev.stopPropagation(); activate(d); });
+  d.addEventListener('input', () => { fitWidth(d); refreshFontPanelText(d); });
+  page.appendChild(d);
+  activate(d);
+}
+document.getElementById('resetBtn').addEventListener('click', () => location.reload());
+// ---- Round 8 Track C: save -> this page's own label (Domino, in-page) ----
+// The live page is a static file: it cannot mint a DB label number
+// (LBL-xxxx) — that serial is issued when the driver records the delivery.
+// What it CAN do: read the CURRENT Lot/WIDTH from this page's own identity
+// boxes, render this page's own label card (same layout as the issued
+// label), and offer the label + the edits JSON as downloads for the driver.
+// PAGE_META is filled by the page builder (per-page values, never guessed).
+function hexToRgb(h) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(h || '');
+  if (!m) return [17, 17, 17];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function findDemoSpan(t) {
+  return [...document.querySelectorAll('.wd')].find(e => {
+    const cx = (parseFloat(e.style.left) + parseFloat(e.style.width) / 2) / S;
+    const cy = (parseFloat(e.style.top) + parseFloat(e.style.height) / 2) / S;
+    return Math.abs(cx - (t.x + t.w / 2)) < 12 && Math.abs(cy - (t.y + t.h / 2)) < 12;
+  });
+}
+function spanBox300(e) {
+  const x = parseFloat(e.style.left), y = parseFloat(e.style.top);
+  const w = parseFloat(e.style.width), h = parseFloat(e.style.height);
+  return [Math.round(x / S), Math.round(y / S), Math.round((x + w) / S), Math.round((y + h) / S)];
+}
+function wordMeta(el) {
+  const w = WORDS[parseInt(el.dataset.i, 10)] || {};
+  return {line: (w.line ?? null), bold: !!w.bold, color: w.color || '#111111'};
+}
+function saveAndLabel() {
+  document.querySelectorAll('.wd.on').forEach(o => {
+    o.classList.remove('on'); o.contentEditable = 'false';
+    if (o.textContent.trim()) o.classList.add('done');
+  });
+  const lotEl = findDemoSpan(DEMO.lot), widEl = findDemoSpan(DEMO.width);
+  const lotNew = (lotEl && lotEl.textContent.trim()) || PAGE_META.old_lot;
+  const widNew = (widEl && widEl.textContent.trim()) || PAGE_META.old_width;
+  const lotBox = spanBox300(lotEl), widBox = spanBox300(widEl);
+  const lotM = lotEl ? wordMeta(lotEl) : {line: null, bold: false, color: '#111111'};
+  const widM = widEl ? wordMeta(widEl) : {line: null, bold: false, color: '#111111'};
+  const edits = [];
+  document.querySelectorAll('.wd').forEach(e => {
+    const t = e.textContent.trim();
+    if (!t) return;
+    const m = wordMeta(e);
+    const b = spanBox300(e);
+    const isLot = lotEl && e === lotEl, isWid = widEl && e === widEl;
+    edits.push({box300: b, line: m.line, bold: m.bold, ink_rgb: hexToRgb(m.color),
+                row_label: isLot ? 'Lot No.' : (isWid ? '02. WIDTH — observation' : ''),
+                old: isLot ? PAGE_META.old_lot : (isWid ? PAGE_META.old_width : null),
+                new: t, manual: !!e.dataset.manual});
+  });
+  const save = {format: 'lse-live-save v1', page_key: PAGE_META.page_key,
+    page_no: PAGE_META.page_no, source_page: PAGE_META.source_page,
+    source_document: PAGE_META.source_document, item: PAGE_META.item,
+    customer: 'Packfirm Limited', saved_at: new Date().toISOString(),
+    lot: {box300: lotBox, line: lotM.line, bold: lotM.bold, ink_rgb: hexToRgb(lotM.color),
+          old: PAGE_META.old_lot, new: lotNew},
+    width: {box300: widBox, line: widM.line, bold: widM.bold, ink_rgb: hexToRgb(widM.color),
+            old: PAGE_META.old_width, new: widNew},
+    edits: edits};
+  try { localStorage.setItem('lse-save-' + PAGE_META.page_key, JSON.stringify(save)); } catch (err) {}
+  document.getElementById('lcItem').textContent = PAGE_META.item;
+  document.getElementById('lcItem2').textContent = PAGE_META.item;
+  document.getElementById('lcLot').textContent = lotNew;
+  document.getElementById('lcWidth').textContent = widNew + ' mm';
+  document.getElementById('lcPageLabel').textContent = PAGE_META.page_label;
+  document.getElementById('lcSrc').textContent = 'খসড়া সেভ — ' + PAGE_META.page_label + ' only (this pack\'s page)';
+  document.getElementById('lcNum').textContent = 'খসড়া — LBL নম্বর পরে';
+  document.getElementById('lcSrcLine').textContent =
+    'This label was filled automatically when its COA page was saved: Batch/Lot and WIDTH are the edited values from the live-scan page ' +
+    PAGE_META.page_label + ' (Lot ' + PAGE_META.old_lot + ' → ' + lotNew + ', WIDTH ' + PAGE_META.old_width + ' → ' + widNew + '), not the old printed values.';
+  const labelHtml = '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">\n<title>Packing Label — ' + PAGE_META.item +
+    ' (LSE live-page save, ' + PAGE_META.page_label + ' — খসড়া)</title>\n<style>\n' +
+    '  * { box-sizing: border-box; }\n  body { margin: 0; background: #e8e6e1; font-family: \'Noto Sans Bengali\',\'Calibri\',sans-serif; }\n' +
+    '  .label { width: 100mm; min-height: 150mm; margin: 24px auto; background: #fff; border: 2.5px solid #000; padding: 10px 12px; color: #000; }\n' +
+    '  .label h2 { text-align: center; font-size: 20px; letter-spacing: 2px; margin: 2px 0 4px; border-bottom: 2px solid #000; padding-bottom: 6px; }\n' +
+    '  .label .sub { text-align: center; font-size: 12px; margin: 0 0 8px; }\n' +
+    '  .label .item { font-size: 19px; font-weight: bold; text-align: center; margin: 8px 0 2px; }\n' +
+    '  .label .pack { text-align: center; font-size: 13px; margin: 0 0 10px; }\n' +
+    '  .label table { width: 100%; border-collapse: collapse; font-size: 14px; }\n' +
+    '  .label td { border: 1px solid #000; padding: 5px 7px; vertical-align: top; }\n' +
+    '  .label td.k { width: 38%; font-weight: bold; background: #f3f4f6; }\n' +
+    '  .label td.from-coa { background: #fef3c7; }\n' +
+    '  .label .src { font-size: 12.5px; margin: 10px 0 4px; line-height: 1.5; }\n' +
+    '  .label .stamp { margin-top: 12px; border: 2px dashed #15803d; color: #15803d; text-align: center; font-weight: bold; font-size: 17px; letter-spacing: 3px; padding: 8px 4px; }\n' +
+    '  .label .sign { display: flex; justify-content: space-between; margin-top: 16px; font-size: 13px; }\n' +
+    '  .label .sign div { border-top: 1px solid #000; padding-top: 3px; width: 45%; text-align: center; }\n' +
+    '  .foot { width: 100mm; margin: 0 auto 24px; color: #555; font-size: 13px; line-height: 1.6; }\n' +
+    '</style></head>\n<body>\n<div class="label">\n  <h2>PACKING LABEL</h2>\n' +
+    '  <p class="sub">Supplier foil — auto-filled from the saved COA page (LSE, per-page label)</p>\n' +
+    '  <p class="item">' + PAGE_META.item + '</p>\n  <p class="pack">Packfirm Limited</p>\n  <table>\n' +
+    '    <tr><td class="k">Item</td><td class="from-coa">' + PAGE_META.item + '</td></tr>\n' +
+    '    <tr><td class="k">Customer</td><td class="from-coa">Packfirm Limited</td></tr>\n' +
+    '    <tr><td class="k">Batch / Lot No.</td><td class="from-coa"><b>' + lotNew + '</b></td></tr>\n' +
+    '    <tr><td class="k">WIDTH (' + PAGE_META.page_label + ')</td><td class="from-coa"><b>' + widNew + ' mm</b></td></tr>\n' +
+    '    <tr><td class="k">Source COA page</td><td>খসড়া সেভ — ' + PAGE_META.page_label + ' only (this pack\'s page)</td></tr>\n' +
+    '    <tr><td class="k">Label</td><td>খসড়া — LBL নম্বর পরে</td></tr>\n  </table>\n' +
+    '  <p class="src">This label was filled automatically when its COA page was saved: Batch/Lot and WIDTH are the edited values from the live-scan page ' +
+    PAGE_META.page_label + ' (Lot ' + PAGE_META.old_lot + ' → ' + lotNew + ', WIDTH ' + PAGE_META.old_width + ' → ' + widNew +
+    '), not the old printed values. Delivery: এখনো রেকর্ড হয়নি — সেভ করা এডিট JSON থেকে ড্রাইভার রেকর্ড করবে।</p>\n' +
+    '  <div class="stamp">QC PASSED</div>\n  <div class="sign"><div>Prepared By</div><div>Authorised By</div></div>\n</div>\n' +
+    '<p class="foot"><b>How this label was made:</b> the COA page ' + PAGE_META.page_label +
+    ' was saved in the live-scan page itself, and this draft label auto-filled from that page\'s own edited fields — the GRAVORA save-COA → label mechanism, one label per page (b1 + c3). The numbered label (LBL-xxxx) is issued when the driver records the delivery in the database.</p>\n</body></html>\n';
+  const dlLabel = document.getElementById('lcDownloadLabel');
+  dlLabel.href = URL.createObjectURL(new Blob([labelHtml], {type: 'text/html'}));
+  dlLabel.download = 'label-' + PAGE_META.page_key + '-draft.html';
+  const dlEdits = document.getElementById('lcDownloadEdits');
+  dlEdits.href = URL.createObjectURL(new Blob([JSON.stringify(save, null, 2)], {type: 'application/json'}));
+  dlEdits.download = 'lse-edits-' + PAGE_META.page_key + '.json';
+  document.getElementById('labelCard').classList.add('open');
+  document.getElementById('labelCard').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+document.getElementById('saveBtn').addEventListener('click', saveAndLabel);
+if (new URLSearchParams(location.search).has('save')) { setTimeout(() => document.getElementById('saveBtn').click(), 1600); }
+if (new URLSearchParams(location.search).has('demo')) { setTimeout(() => document.getElementById('demoBtn').click(), 400); }
+if (new URLSearchParams(location.search).has('boxes')) { setTimeout(() => document.getElementById('boxBtn').click(), 200); }
+</script></body></html>
