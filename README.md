@@ -24,15 +24,15 @@ scan (PDF/JPG, any DPI)
 
 Standing principle: **preserve the document's full originality** — whatever DPI the original has, work at that DPI. Never downscale, never re-encode the background, never change the resolution. The edited PDF embeds the original scan bytes verbatim; only the edited word's pixels change.
 
-## Status — research complete (Round 18, 2026-11-07)
+## Status — Round 19 (2026-11-08): merged segmenter promoted as the new baseline; Round 19 was the Raviraj gate fix (9/16 → 17/8)
 
-The research rounds are finished: **Round 18 was the last research round**. Three rounds in a row (R16–R18) changed no score; the live pages rebuild byte-identically. What remains is product work — the integration build, the open product decisions below, and the two things only a human can do (a real-printer calibration and a lawyer's patent check).
+The research rounds converged at Round 18 (three rounds in a row, R16–R18, changed no score; the live pages rebuild byte-identically). Round 19 (2026-11-08) reopened the research to fix the Raviraj gate (9/16 → 17/8) and promoted the merged segmenter as the new baseline. What remains is product work — the integration build, the open product decisions below, and the two things only a human can do (a real-printer calibration and a lawyer's patent check).
 
 LSE is the **editing technology inside GRAVORA's COA, template, and supplier modules** — a local-first offline QC/QMS app for flexible-packaging factories in Bangladesh, the software it was invented for. It is not a standalone module of GRAVORA. This repo is the same technology, standalone and public, so everyone can use it, learn from it, and make it better.
 
 ## What is proven (measured, not claimed)
 
-Proven on real scanned supplier Certificates of Analysis (PG Foils, 300 DPI, colour and B&W), plus a second supplier's pages (Raviraj) and a synthetic sample. All numbers are from the Round 18 report (`docs/ROUND18-REPORT.md`); nothing here is claimed without a measurement behind it.
+Proven on real scanned supplier Certificates of Analysis (PG Foils, 300 DPI, colour and B&W), plus a second supplier's pages (Raviraj) and a synthetic sample. The Raviraj gate numbers are from the Round 19 report (`docs/ROUND19-REPORT.md`); earlier numbers are from the round reports in `docs/`; nothing here is claimed without a measurement behind it.
 
 - **Native 300 DPI end-to-end** — segmentation → live page → edited PDF, no downscaling, no re-encoding of the background. Live pages rebuild **5/5 byte-identical**.
 - **Identity-verified edits** — every demo edit is checked by word identity (row label + box), never by position alone. Lot No. `206/7 → 207/9`, WIDTH `780.0 → 781.5`, on the correct words, "Hard" untouched. Identity probe **15/15, three runs**.
@@ -46,10 +46,10 @@ Proven on real scanned supplier Certificates of Analysis (PG Foils, 300 DPI, col
 ## Honest limits
 
 - **Universality is not yet proven.** On printed documents outside the tested formats, the editing machinery works but word segmentation does not yet: **94/182** across the FUNSD / SROIE / Tottel / Shields samples. On cursive handwriting, no. The fixed word-gap rule cannot separate words when loose letter-spacing overlaps word gaps. This is the biggest open technical problem.
-- **Gate: 9 ALLOW / 16 REFUSE.** On 25 new Raviraj pages the quality gate allows 9 and refuses 16 (threshold T1 0.50, margin only 0.025). The refusals are real segmentation misses (pale blue ink, stamp-covered words, dense small print) — the gate measures the gap correctly; the gap itself is not closed yet. Gate promotion is **not** decided.
+- **Gate: 17 ALLOW / 8 REFUSE on 25 new Raviraj pages (flags 73 → 16, words 8193 → 9012); remaining REFUSE: p01, p08, p09, p12, p13, p14, p15, p21.** The measured cause of the misses is TOP-2 blob-split (58/73 flags) and the LOGO rect; the earlier light-blue-ink / blue-on-green / stamp-covered labels were proven wrong by measurement. The merged segmenter is promoted as the new baseline (see `docs/ROUND19-REPORT.md`).
 - **Write-back, 300-DPI verifier: 37/41.** The 4 failures are ink-IoU only, a known limit of the stand-in font — not a regression.
 - **Print calibration needs a real printer.** Screen-perfect is not print-perfect; calibration against the factory printer has not been done and cannot be done without the physical printer.
-- **US patent: legal check needed before any sale.** US patent US20150332491A1 exists (enforceability unverified), and Adobe US9741142B2 (active until 2035-02-05) is the first thing a lawyer must look at. No professional freedom-to-operate opinion exists. This is not legal advice — do not sell on the strength of this README.
+- **US patent: legal check needed before any sale.** US patent US20150332491A1 exists (enforceability unverified), and Adobe US9741142B2 (active until 2035-02-05) is the first thing a lawyer must look at. New prior-art lead US 5,734,761 (Xerox, 1998) — claims unread, no verdict; must go to the lawyer with Adobe US9741142B2. No professional freedom-to-operate opinion exists. This is not legal advice — do not sell on the strength of this README.
 - **Open product decisions (tracked in GRAVORA, none decided here):** the acceptance bar for supplier COAs (Q-03, proposal 90%+), the patent-check timing (Q-04), the vault path (Q-06), warnings-vs-relations (Q-07), scan-COA intake (Q-08), the 18 borderless edges (Q-09, proposal: keep faithful), the caps policy (proposal: lowercase suggestion where caps do not fit), and gate promotion. The build runs on reversible defaults; none of these block it.
 - **DBNet is deferred.** Classical segmentation stays; DBNet is a line-detection cross-check only, not a swap.
 

@@ -1,36 +1,137 @@
-"""Segmentation-completeness gate (R17) — a DOCUMENTED QUALITY CHECK.
+"""Round 19 merged seg-completeness gate for full-page CC-mask.
 
-Ported from the GRAVORA prototype (scan-paper/improve/round17/track-b/
-gate_ccmask.py). No OCR. The gate must guarantee NO silently-erased
-seg-missed word: it REFUSEs (never erases) when it finds word-like ink
-the seg does not cover, and only ALLOWs when the page is complete.
+Evolved from Round 17 Track B (gate_ccmask.py): the fixed logo rect
+(150,120,510,450) is GONE — the exclusion rect is detected per page
+(logo_detect.detect_logo_rect); blue seal regions are excluded
+(detect_seal_regions); sig_y uses the anchor check. The -2 band rule
+(DECISIONS.md, cw > 120) is kept in full_page_mask() — same surgical
+block as ccmask.full_page_clean(). See improve/ROUND19-REPORT.md
+(Raviraj gate 9/16 -> 17/8).
+
+Original Round 17 purpose:
+
+Purpose: make build-time CC-mask safe. The gate must guarantee NO silently-
+erased seg-missed word: it REFUSEs (never erases) when it finds word-like
+ink the seg does not cover, and only ALLOWs when the page is complete.
 
 Two independent tests (either one REFUSEs):
   T1 core-outside: every core CC assigned to a word must lie (nearly)
-     inside that word's box. Flag: outside_frac > 0.50 AND extension
-     > 6 px beyond the box. (T1 threshold 0.50 is UNCHANGED — see
-     DECISIONS.md. Do NOT promote this gate to a ship-gate.)
-  T2 word-like uncovered cluster: R16 miss-hunt clustering verbatim,
-     then word-like filters + logo / signature / rule exclusions.
+     inside that word's box. A core that sticks far outside its assigned
+     box is ink belonging to another (missed) word — exactly how the R16
+     "68.02" case was erased (cores overlapped a neighbour's box by a few
+     rows). Flag: outside_frac > 0.25 AND extension > 6 px beyond the box.
+     Threshold calibrated from data (see calibrate()): on correctly
+     oriented pages the max outside_frac is ~0.00-0.02.
+  T2 word-like uncovered cluster: R16 miss-hunt clustering verbatim
+     (Otsu CCs, centre in no word box +2px, row-chain, x-gap split),
+     then word-like (n_cc>=2, h>=12, w>=20, area>=150, median CC
+     height>=10, median CC area>=25, overlap with any word box <50%)
+     AND outside the exclusions below. Exclusions (mirroring what the
+     mask itself never touches): logo rect (150,120,510,450) — the mask
+     zeroes it, so ink there can never be erased; signature zone
+     (y0 >= sig_y, inpaint v4 rule); rule-shaped clusters; halftone dots
+     (median CC height < 10).
 
-DECISION (reversible, 2026-11-08 — see DECISIONS.md, "-2 band rule"):
-full_page_mask() excludes band-shaped -2 cores (cw > 120 px) from the
-mask — the same rule as ccmask.full_page_clean(). May's dotted title
-band (449 px, ~14.5k mask px/page) is a highlight, not a word.
+Also in this module: full_page_mask(img, seg, rule_exclusion) — a faithful
+mirror of R16 inpaint_ccmask2.full_page_clean's mask construction, with the
+rule exclusion switchable, so mask px before/after exclusion can be measured
+on correctly oriented pages. The mirror is validated by reproducing R16's
+Aug-p2 JPG numbers exactly (397,661 / 69,058) before any PNG is measured.
+
+Background (measured R17, not assumed): R16 Track C ran fullpage on
+aug-p2-orig.jpg, which is the Aug p2 page ROTATED 180 deg relative to the
+live-page PNG (mean abs diff vs PNG: 17.06 rotated vs 27.96 as-is; the
+"68.02" at JPG x310-390 is the 180-deg rotation of the true value at PNG
+x2097-2187, y1394-1422 — which HAS a seg box [2097,1394,2187,1422]).
+So the R16 "seg-missed 68.02 / silent data loss" case is an artefact of a
+rotated source image, not a property of the true page. This gate is
+validated on correctly oriented pages (PNGs), on the rotated JPG (must
+REFUSE), and on synthetic misses (a deleted seg box must REFUSE).
+
+No OCR anywhere. Reads images/segs read-only; writes only this track dir.
+Usage (from scan-paper/):
+  venv/bin/python improve/round17/track-b/gate_ccmask.py gate IMG SEG
+  venv/bin/python improve/round17/track-b/gate_ccmask.py mask IMG SEG
+  venv/bin/python improve/round17/track-b/gate_ccmask.py calibrate IMG SEG
 """
 import json
+import sys
 
 import cv2
 import numpy as np
 
 from .ccmask import INK_THR, assign_cores, core_ccs, detect_sig_y
+from .logo_detect import detect_logo_rect
+# ROUND 19 TRACK-LOGO: the fixed LOGO rect (150,120,510,450) is GONE here
+# too — it hid real seg misses (DIAGNOSIS.md §4.3: Goods, GO, ORIGINAL...).
+# The T2 logo exclusion and the mask zeroing now use the SAME per-page
+# detected rect as segment_logo.py (logo_detect.detect_logo_rect), so the
+# gate can no longer hide a miss the segmenter made. None = no exclusion.
 
-CORE_OUT_FRAC = 0.50   # fraction of a core's pixels outside its word box
-CORE_OUT_EXT = 6       # px the core must extend beyond the box edge
-LOGO = (150, 120, 510, 450)  # same as inpaint.py v4 / R16 (300 DPI)
+def detect_seal_regions(img, gray):
+    """Round 19 Track-sigy — blue round-seal regions (stamp exclusion).
 
-# -2 band rule (DECISIONS.md): band-shaped ambiguous core, not a word.
-BAND_CORE_MIN_W = 120
+    Colour separation (S26 seal-extractor principle, re-measured for BLUE
+    seals: that repo is tuned for Chinese RED seals; ours are blue, so the
+    channel test is B-R > 50 per CC) + shape as second vote (S31 ellipse
+    idea, bbox form): blue CCs chained with a 60px gap; a cluster is a
+    seal region iff w,h in [120,600], 0.5 <= w/h <= 2.0, n_cc >= 8,
+    area >= 2000. Measured on 32 pages: detects the GCC stamp (p13) and
+    the RAVIRAJ seal (p16/p17/p18/p19) and nothing else; the 3 stamp
+    flags fall inside, 0 real flags do (wide light-blue letterhead text
+    fails the w/h shape test; the GCCI blue text logo fails h >= 120;
+    the MATA blue logo fails n_cc >= 8). HoughCircles was tried first
+    and REJECTED (0 circles on p13/p16, false positives elsewhere);
+    large hollow-CC rings were tried and REJECTED (table frames).
+    Returns a list of [x0, y0, x1, y1] seal boxes. No OCR, no model."""
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    num, labels, stats, _cent = cv2.connectedComponentsWithStats(bw, connectivity=8)
+    blue = []
+    for i in range(1, num):
+        x, y, ww, hh, area = (int(v) for v in stats[i])
+        if area < 8 or ww > 900 or hh > 180:
+            continue
+        m = (labels[y:y + hh, x:x + ww] == i)
+        px = img[y:y + hh, x:x + ww][m]
+        if len(px) == 0:
+            continue
+        mb, _mg, mr = px.mean(axis=0)
+        if mb - mr > 50:
+            blue.append({"box": [x, y, x + ww, y + hh], "area": area})
+    clusters = []
+    for b in sorted(blue, key=lambda c: (c["box"][1], c["box"][0])):
+        placed = False
+        for cl in clusters:
+            x0 = min(c["box"][0] for c in cl)
+            y0 = min(c["box"][1] for c in cl)
+            x1 = max(c["box"][2] for c in cl)
+            y1 = max(c["box"][3] for c in cl)
+            if (b["box"][0] - x1 <= 60 and x0 - b["box"][2] <= 60
+                    and b["box"][1] - y1 <= 60 and y0 - b["box"][3] <= 60):
+                cl.append(b)
+                placed = True
+                break
+        if not placed:
+            clusters.append([b])
+    seals = []
+    for cl in clusters:
+        x0 = min(c["box"][0] for c in cl)
+        y0 = min(c["box"][1] for c in cl)
+        x1 = max(c["box"][2] for c in cl)
+        y1 = max(c["box"][3] for c in cl)
+        w, h = x1 - x0, y1 - y0
+        area = sum(c["area"] for c in cl)
+        if (120 <= w <= 600 and 120 <= h <= 600 and 0.5 <= w / h <= 2.0
+                and len(cl) >= 8 and area >= 2000):
+            seals.append([x0, y0, x1, y1])
+    return seals
+
+
+def _in_seal(boxes, cx, cy):
+    for b in boxes:
+        if b[0] <= cx <= b[2] and b[1] <= cy <= b[3]:
+            return True
+    return False
 
 def detect_sig_y_gate(gray, h):
     """Gate's own signature-row detector: same rule as inpaint.py v4
@@ -56,6 +157,17 @@ def detect_sig_y_gate(gray, h):
     med_h = sorted(letter_h)[len(letter_h) // 2] if letter_h else 18
     tall = [t for t in tall if t[1] > 0.7 * h and t[3] > 1.8 * med_h and t[2] < 300]
     return min(t[1] for t in tall) if len(tall) >= 2 else h
+# R17 calibration: on correctly oriented pages, 3/1543 cores have
+# outside_frac > 0.05 (max 0.308: a 307px halftone-band core and a 14px
+# edge fragment) — so 0.25 would false-REFUSE. 0.50 + word-size guard
+# (cw<=120, ch<=80) clears all correct pages (measured); the rotated-JPG
+# "68.02" digits sit at frac ~0.82, and the rotated JPG has 188 cores
+# above 0.25, so 0.50 keeps a wide margin on both sides.
+CORE_OUT_FRAC = 0.50   # fraction of a core's pixels outside its word box
+CORE_OUT_EXT = 6       # px the core must extend beyond the box edge
+
+# -2 band rule (DECISIONS.md): band-shaped ambiguous core, not a word.
+BAND_CORE_MIN_W = 120
 
 
 def is_rule_shaped(cw, ch, area):
@@ -110,9 +222,12 @@ def full_page_mask(img, seg, rule_exclusion=True):
     ker = np.ones((3, 3), np.uint8)
     mask = (cv2.dilate(cores, ker, iterations=1) > 0) & ink
     mask = mask.astype(np.uint8) * 255
-    mask[LOGO[1]:LOGO[3], LOGO[0]:LOGO[2]] = 0
+    logo_rect, _li = detect_logo_rect(gray)
+    if logo_rect is not None:
+        mask[logo_rect[1]:logo_rect[3], logo_rect[0]:logo_rect[2]] = 0
     mask[sig_y:h, :] = 0
     return mask, {"mask_px": int((mask > 0).sum()), "sig_y": int(sig_y),
+                  "logo_rect": list(logo_rect) if logo_rect is not None else None,
                   "ambiguous_cores": len(ambiguous),
                   "rule_cores_excluded": n_rule_excluded}
 
@@ -203,6 +318,8 @@ def gate(img, seg):
     med_h = float(seg.get("median_char_h_px", 20))
     sig_y = int(detect_sig_y_gate(gray, h))
     sig_y_v4 = int(detect_sig_y(gray, h))
+    logo_rect, _li = detect_logo_rect(gray)
+    seal_boxes = detect_seal_regions(img, gray)
     reasons = []
 
     # ---- T1: core-outside ----
@@ -240,7 +357,15 @@ def gate(img, seg):
                       [x, y, x + cw, y + ch], b, total))
     worst.sort(reverse=True)
     t1_flags = [t for t in worst if t[0] > CORE_OUT_FRAC and t[1] > CORE_OUT_EXT]
+    t1_kept = []
     for t in t1_flags[:10]:
+        _cx = (t[4][0] + t[4][2]) / 2
+        _cy = (t[4][1] + t[4][3]) / 2
+        if _in_seal(seal_boxes, _cx, _cy):
+            # R19 Track-sigy: core is a seal-letter fragment, not a real word
+            continue
+        t1_kept.append(t)
+    for t in t1_kept:
         reasons.append({"test": "T1-core-outside",
                         "core_box": t[4], "word_idx": t[3], "word_box": t[5],
                         "outside_frac": t[0], "extension_px": t[1],
@@ -254,8 +379,8 @@ def gate(img, seg):
         hh, ww = y1 - y0, x1 - x0
         if y0 >= sig_y:
             continue  # signature zone: mask never touches it
-        if x0 >= LOGO[0] and y0 >= LOGO[1] and x1 <= LOGO[2] and y1 <= LOGO[3]:
-            continue  # logo rect: mask zeroes it
+        if logo_rect is not None and x0 >= logo_rect[0] and y0 >= logo_rect[1] and x1 <= logo_rect[2] and y1 <= logo_rect[3]:
+            continue  # detected logo rect: mask zeroes it
         if hh >= 150 and ww <= 10:
             continue  # vertical rule
         if ww >= 150 and hh <= 10:
@@ -272,6 +397,12 @@ def gate(img, seg):
             ov = max(ov, ox * oy)
         if ov >= 0.5 * ww * hh:
             continue
+        # R19 Track-sigy: cluster inside a blue seal region is seal
+        # lettering, not a real word
+        _ccx = (x0 + x1) / 2
+        _ccy = (y0 + y1) / 2
+        if _in_seal(seal_boxes, _ccx, _ccy):
+            continue
         t2_flags.append(c)
     for c in t2_flags:
         reasons.append({"test": "T2-uncovered-wordlike", "box": c["box"],
@@ -280,12 +411,16 @@ def gate(img, seg):
                         "med_cc_area": c["med_cc_area"]})
     verdict = "REFUSE" if reasons else "ALLOW"
     details = {"verdict": verdict, "sig_y": sig_y, "sig_y_v4": sig_y_v4, "img_h": h,
+               "logo_rect": list(logo_rect) if logo_rect is not None else None,
                "n_words": len(words),
                "n_raw_clusters": n_raw,
                "t1_worst": [{"outside_frac": t[0], "extension_px": t[1],
                              "core_box": t[4], "word_idx": t[3],
                              "word_box": t[5]} for t in worst[:5]],
-               "t1_flags": len(t1_flags), "t2_flags": len(t2_flags),
+               "t1_flags": len(t1_kept), "t1_flags_raw": len(t1_flags),
+               "t1_seal_suppressed": len(t1_flags) - len(t1_kept),
+               "t2_flags": len(t2_flags),
+               "seal_boxes": seal_boxes,
                "reasons": reasons}
     return verdict, details
 
@@ -380,18 +515,17 @@ def mask_px_with_without_band(img, seg):
     ker = np.ones((3, 3), np.uint8)
     mask_off = (cv2.dilate(all_cores, ker, iterations=1) > 0) & ink
     mask_off = mask_off.astype(np.uint8) * 255
-    mask_off[LOGO[1]:LOGO[3], LOGO[0]:LOGO[2]] = 0
+    _logo_off, _ = detect_logo_rect(gray)
+    if _logo_off is not None:
+        mask_off[_logo_off[1]:_logo_off[3], _logo_off[0]:_logo_off[2]] = 0
     mask_off[sig_y:h, :] = 0
     n_band = sum(1 for c in cores if c["band"])
     return info_on["mask_px"], int((mask_off > 0).sum()), n_band
 
-
-if __name__ == "__main__":
-    import sys
+def main():
     cmd, img_path, seg_path = sys.argv[1], sys.argv[2], sys.argv[3]
     img = cv2.imread(img_path)
-    with open(seg_path) as _f:
-        seg = json.load(_f)
+    seg = json.load(open(seg_path))
     if cmd == "gate":
         verdict, details = gate(img, seg)
         print(json.dumps(details, indent=1))
@@ -411,3 +545,7 @@ if __name__ == "__main__":
     else:
         print("usage: gate|mask|calibrate IMG SEG")
         sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
