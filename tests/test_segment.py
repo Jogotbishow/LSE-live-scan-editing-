@@ -147,5 +147,38 @@ class TestSegmentAllPages(unittest.TestCase):
                 self.assertGreaterEqual(m, 0.90 * len(ref["words"]), f"{kind} p{p}")
 
 
+@requires_real_fixtures
+class TestP21Stretch(unittest.TestCase):
+    def test_p21_stretch_splits_into_seven_words(self):
+        """Round 26 track-tau: p21's 7-word stretch [827,1970,1317,2005]
+        (\"three months before the date of expiry\") must segment into
+        exactly these 7 word boxes (tau-signal split, US 20150086113).
+        R24 proved it a geometry-only known limit (24 splits: 9 correct,
+        15 wrong, no separating signal); tau breaks it 7/7 by identity
+        at +-3px and +-5px, 6/6 boundaries, 0 false cuts, on both the
+        pipeline render and the round4 render. The fused parent box must
+        NOT survive: the stretch box itself must be absent."""
+        img = cv2.imread(os.path.join(
+            SP, "improve/round18/track-b/pages300/rav-21.png"))
+        self.assertIsNotNone(img, "rav-21.png missing")
+        seg = segment_array(img, image_name="rav p.21")
+        boxes = [tuple(w["box"]) for w in seg["words"]]
+        expected = [
+            (827, 1970, 898, 2005),
+            (898, 1970, 1003, 2005),
+            (1003, 1970, 1094, 2005),
+            (1094, 1970, 1139, 2005),
+            (1139, 1970, 1201, 2005),
+            (1201, 1970, 1235, 2005),
+            (1235, 1970, 1317, 2005),
+        ]
+        for b in expected:
+            self.assertIn(b, boxes, f"stretch word {b} missing from segs")
+        self.assertNotIn((827, 1970, 1317, 2005), boxes,
+                         "fused stretch box still present (tau did not fire)")
+        print(f"  p21 stretch: all 7 words present, fused box absent "
+              f"(total {len(boxes)} words)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

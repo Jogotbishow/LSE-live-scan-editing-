@@ -22,11 +22,15 @@ R3_DB = os.path.join(SP, "improve/round3/track-c/lse_gravora.db")
 R3_DB_SHA = "1c065457bb9cb8e5b276d5007d9b020c18c8a0ae0374b92eb759f12150746939"
 
 CANONICAL_LIVE_SHAS = {
-    "live-scan-page-aug-300.html": "bce371471cbe10d8ce30ef005b6d17a9a4a7771f55d0726bcc3b418036e70d4f",
-    "live-scan-page-aug-p2-300.html": "f4f72713b1059967427629df28015c67faf80f6f329a3981c2f2e6602b57e6ed",
-    "live-scan-page-may-300.html": "d0948b0f5a9a1bb8ae2b2d6191ddbf5f3eb996d7be1354321d044f0eb1d82a67",
-    "live-scan-page-may-p2-300.html": "539995a946a3b66b2cbf076d6efe1e97040db84312d086590697f2205fce77d2",
-    "live-scan-page-may-p3-300.html": "8587be86243d7c2ff9dca8b4d733ba44e0121440fbd88fe107180d7de9656796",
+    # Re-pinned 2026-11-09 (Round 27): the 5 live pages were intentionally
+    # rebuilt with current R26 segs (Guard 0/5 FAIL -> 5/5 PASS). Old SHAs
+    # were the stale r10m-family pages (bce37147..., f4f72713..., d0948b0f...,
+    # 539995a9..., 8587be86...). New SHAs verified by parent (sha256sum).
+    "live-scan-page-aug-300.html": "d4d254308a29e933fa7011e0cca8b65854058673ea7fe1d330225e774a9224d5",
+    "live-scan-page-aug-p2-300.html": "c3d9b7a4c41af3a7f07c7843f1140abe3de1443543bad5fab3cd21dd13901391",
+    "live-scan-page-may-300.html": "7d4d19cc97816fbc39dbc6442b16eeb5bcb8941852980baf686858fabf256ade",
+    "live-scan-page-may-p2-300.html": "3d93443414704a96151956a8f8ea8b2dd914426ff23944f59a6e689ac06584eb",
+    "live-scan-page-may-p3-300.html": "9cf42b25b428f5596761da2e49769742b4d8ac929131a7d4fdd34ac0acda92d6",
 }
 
 # Real-fixture availability: the full suite runs against the real PG

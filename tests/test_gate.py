@@ -36,6 +36,25 @@ class TestGateConstants(unittest.TestCase):
     def test_band_rule_constant(self):
         self.assertEqual(gate.BAND_CORE_MIN_W, 120)
 
+    def test_t5_constants(self):
+        # Round 26 track-gate: T5 rule-shred eye. A rule is long and
+        # thin (h <= 0.50x med_h, w >= 12x med_h) with ONE Otsu CC
+        # spanning >= 0.80 of its width. Measured (probe_a_rule.py, 33
+        # baseline pages, 87 wide boxes): the joint rule fires on
+        # exactly 5 boxes, all 5 rules, 0 text boxes.
+        self.assertEqual(gate.T5_RULE_MAX_H_MED, 0.50)
+        self.assertEqual(gate.T5_RULE_MIN_W_MED, 12.0)
+        self.assertEqual(gate.T5_RULE_MIN_DOM_FRAC, 0.80)
+
+    def test_t4_constants(self):
+        # Round 25 track-gate: T4 over-split eye. Join gap is Path C
+        # (iii)'s own 2px scale; white-cut threshold 0.60 sits in the
+        # measured empty interval (0.529, 0.647) between the 12 wrong
+        # cuts (<= 0.529) and the 3 true slash columns (>= 0.647).
+        self.assertEqual(gate.T4_JOIN_GAP_PX, 2)
+        self.assertEqual(gate.T4_MIN_RUN_WORDS, 2)
+        self.assertEqual(gate.T4_WHITE_CUT_FRAC, 0.60)
+
 
 @requires_real_fixtures
 class TestMinusTwoBandRule(unittest.TestCase):
@@ -126,6 +145,50 @@ class TestGateVerdicts(unittest.TestCase):
               f"(T1 {details['t1_flags']}, T2 {details['t2_flags']})")
         self.assertEqual(verdict, "REFUSE")
         self.assertGreater(details["t1_flags"] + details["t2_flags"], 0)
+
+    def test_t5_rule_shred(self):
+        """Round 26 track-gate: T5 must REFUSE a horizontal rule the
+        segmenter shredded into pieces (R25 fuzzy track: the p01/p2
+        rules cut into 5, gate said ALLOW), must NOT flag one
+        unshredded rule box, and must not flag genuine pages (0 FP
+        on the R25 baseline: 23 ALLOW pages + 8 extras)."""
+        import cv2
+        import numpy as np
+        img = np.full((200, 800, 3), 255, np.uint8)
+        cv2.rectangle(img, (100, 50), (406, 54), (0, 0, 0), -1)
+        pieces = [[100, 50, 127, 55], [127, 50, 187, 55],
+                  [187, 50, 247, 55], [247, 50, 317, 55],
+                  [317, 50, 407, 55]]
+        seg = {"words": [{"box": b} for b in pieces],
+               "median_char_h_px": 20}
+        verdict, details = gate.gate(img, seg)
+        print(f"  synthetic shredded rule: {verdict} "
+              f"(T5 {details['t5_flags']})")
+        self.assertEqual(verdict, "REFUSE")
+        self.assertEqual(details["t5_flags"], 1)
+        self.assertEqual(details["t5_list"][0]["box"], [100, 50, 407, 55])
+        seg1 = {"words": [{"box": [100, 50, 407, 55]}],
+                "median_char_h_px": 20}
+        _v, d1 = gate.gate(img, seg1)
+        self.assertEqual(d1["t5_flags"], 0)
+        for label, img2, segf in (
+                ("Aug p1", render_bgr(PG_AUG, 0, dpi=300), "seg-aug-p1-300.json"),
+                ("May p1", render_bgr(PG_MAY, 0, dpi=300), "seg-may-p1-300.json")):
+            seg = json.load(open(os.path.join(SP, segf)))
+            _v, d = gate.gate(img2, seg)
+            print(f"  {label}: T5 {d['t5_flags']}")
+            self.assertEqual(d["t5_flags"], 0)
+
+    def test_t4_no_flag_on_canonical_pages(self):
+        """Round 25 track-gate: T4 must not flag genuine pages (0 FP
+        on the R24 baseline: 23 ALLOW pages + 8 extras, PNG and fitz)."""
+        for label, img, segf in (
+                ("Aug p1", render_bgr(PG_AUG, 0, dpi=300), "seg-aug-p1-300.json"),
+                ("May p1", render_bgr(PG_MAY, 0, dpi=300), "seg-may-p1-300.json")):
+            seg = json.load(open(os.path.join(SP, segf)))
+            verdict, details = gate.gate(img, seg)
+            print(f"  {label}: T4 {details['t4_flags']}")
+            self.assertEqual(details["t4_flags"], 0)
 
 
 if __name__ == "__main__":
