@@ -520,12 +520,28 @@ def open_document(pdf_path, workdir=None, item="", dna_regular=None,
 
 
 def _save_state(self):
+    # A glyph_image is a PIL layer, not JSON: persist the marker, not
+    # the pixels. A reloaded edit therefore carries glyph_image=None
+    # WITH the key present — build_patch refuses that (it must never
+    # silently fall back to a font render for a harvest edit). The
+    # caller re-composes the layer from the glyph library before
+    # re-saving.
+    def _sanitize(e):
+        e = dict(e)
+        g = e.get("glyph_image")
+        if isinstance(g, Image.Image):
+            e["glyph_image"] = None
+            e["glyph_image_note"] = (
+                "composed layer not persisted; re-compose from the "
+                "glyph library before re-saving")
+        return e
+
     state = {"source_path": self.source_path,
              "source_label": self.source_label,
              "workdir": self.workdir,
              "dna_regular": self.dna_regular, "dna_bold": self.dna_bold,
              "bold_mode": self.bold_mode,
-             "edits": [{"page": e_page, **e}
+             "edits": [{"page": e_page, **_sanitize(e)}
                        for pg in self.pages for e_page in [pg.number]
                        for e in pg.edits]}
     with open(os.path.join(self.workdir, "state.json"), "w") as f:

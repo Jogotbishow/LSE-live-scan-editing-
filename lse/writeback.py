@@ -54,11 +54,15 @@ import numpy as np
 from fontTools.ttLib import TTFont
 from PIL import Image, ImageDraw, ImageFont
 
+from .fonts import find_font as _find_font
+
 LSE_VERSION = "LSE-EDITED v1"
 BUILD_VERSION = "v2.1-300dpi-multipage"
 
-LIB_SERIF_REG = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
-LIB_SERIF_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
+# Bundled first (lse/fonts/), system path as fallback — LSE must work
+# on a machine with no system fonts installed.
+LIB_SERIF_REG = _find_font("Liberation Serif") or "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
+LIB_SERIF_BOLD = _find_font("Liberation Serif Bold") or "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
 
 PATCH_MARGIN_PX = 3      # == v1 ERASE_DILATE 2 px at 200 DPI, scaled x1.5
 INPAINT_RADIUS = 6       # == v1 radius 4 at 200 DPI, scaled x1.5
@@ -236,6 +240,57 @@ def build_patch(upright_rgb, gray, box, edit, dna_regular=None,
     the box, caps_mode="strict" raises CapsDoesNotFitError (with the
     lowercase suggestion attached); caps_mode="suggest_lowercase"
     renders the suggestion instead and records caps_action.
+
+    ``edit["fit_width_px"]`` (optional, Raviraj v3): the width the fit
+    targets, decoupled from the erase box. A span edit must erase the
+    WHOLE old value (wide box) but must not upscale a short replacement
+    to fill that box (width-fit would stretch it to 1.25x fs0). When
+    given, caps + width-fit run against fit_width_px (clamped to the
+    box width); the erase/inpaint still covers the full box.
+
+    ``edit["scale_x"]`` (optional, Raviraj 2026-11-24): horizontal
+    squeeze of the rendered text layer only, 0.85–1.0. For a condensed
+    source font, Liberation at the height-matched fs is wider than the
+    original; scale_x (orig_width / new_width, measured at the same
+    DPI) matches the width while keeping the cap height. Never a
+    stretch, never past a condensed look.
+
+    ``edit["font_path"]`` (optional, Raviraj 2026-11-24): an explicit
+    font file for this edit, overriding DNA/Liberation. For a
+    condensed source font the letterforms themselves differ — no
+    squeeze reproduces them. Noto Serif Condensed (Regular for the
+    spec value, SemiBold for the invoice value, whose stems measure
+    6 px where Liberation Regular gives 4 and Liberation Bold 11).
+
+    ``edit["fs0_px"]`` (optional, Raviraj 2026-11-24): the cap-height
+    size, overriding the default box_h / 0.85. The default assumes
+    the box height IS the cap height — false when the old ink is
+    taller than its caps (the Raviraj header values' slashes span
+    55 px against 40 px caps, so the box implies fs0 69 while the
+    caps need fs 60). The erase box still covers the full old ink.
+
+    ``edit["dy_px"]`` (optional, Raviraj 2026-11-24): vertical shift
+    of the pasted layer, +down. The layer is placed by ink-bbox top,
+    which for the old text is the SLASH top and for Liberation is
+    nearly the cap top (slash only 2 px above the cap, vs 15 px in
+    the original) — without the shift the new caps float 13 px too
+    high. dy = (old_ink_h - old_cap_h) - (new_ink_h - new_cap_h),
+    measured, never guessed.
+
+    ``edit["glyph_image"]`` (optional, glyph harvest / retouch,
+    2026-11-24): the new word already rendered as a PIL RGBA layer
+    (same contract as render_word_layer: transparent background, ink
+    with alpha) — from the document's own harvested glyphs, with
+    missing characters retouched toward them. When present, the font
+    pick, the caps gate and the width fit are ALL skipped: shrinking
+    or squeezing the composition would destroy the exactness it
+    exists to provide. The layer is pasted at natural size, anchored
+    by its ink bbox to the old ink bbox (dy_px still applies, and is
+    normally 0 — harvested ink spans what the old ink spanned).
+    The ink must fit the box + PATCH_MARGIN_PX or build_patch
+    refuses (never clipped silently). The record names the font
+    "glyph-harvest" and lists retouched letters, so a retouched
+    glyph is never mistaken for harvested ink.
     """
     from .caps import fit_caps
     x0, y0, x1, y1 = [int(v) for v in box]
@@ -259,48 +314,124 @@ def build_patch(upright_rgb, gray, box, edit, dna_regular=None,
     if orig_bbox is None:
         raise ValueError(f"no ink found for edit {edit} at native box {[x0, y0, x1, y1]}")
     new_text = edit["new_text"]
-    font_path, font_name = pick_font(new_text, bold, dna_regular, dna_bold)
-    fs0 = round(h / 0.85, 1)
-    # Caps rule (proposal B) is enforced on the FITTED size: the live
-    # page fits the width to 97% of the box, clamped to [0.75, 1.25] x
-    # fs0 — a caps word that only fits by shrinking its cap height
-    # below fs0 is NOT a fit. So the caps check runs at fs0, before
-    # width-fitting, and the fitted size may never go below fs0 for caps.
-    caps_decision = fit_caps(new_text, font_path, fs0, w)
-    caps_action = caps_decision["action"]
-    if caps_decision["action"] == "suggest_lowercase" and caps_decision["suggestion"]:
-        if caps_mode == "strict":
-            err = CapsDoesNotFitError(
-                f"caps {new_text!r} ({caps_decision['width_px']}px) does not "
-                f"fit a {w}px box at {fs0}px; suggestion: "
-                f"{caps_decision['suggestion']!r} — never squeezed, never shrunk")
-            err.suggestion = caps_decision["suggestion"]
-            err.width_px = caps_decision["width_px"]
-            err.box_w_px = w
-            raise err
-        new_text = caps_decision["suggestion"]
-        font_path, font_name = pick_font(new_text, bold, dna_regular, dna_bold)
-    fs_used, rendered_w = fit_font_size(new_text, font_path, fs0, w)
-    if caps_decision["action"] in ("caps", "caps_widened_slot") and fs_used < fs0:
-        # A caps word must never be shrunk below its cap-height size to
-        # fit: that is shrink-to-fit by another name (R18: cap height
-        # 37 -> 19.4 px). Re-check at fs0 and refuse instead.
-        fs_used, rendered_w = fs0, measure_width_at(new_text, font_path, fs0)
-        if rendered_w > w:
-            err = CapsDoesNotFitError(
-                f"caps {new_text!r} ({rendered_w:.0f}px) does not fit a {w}px "
-                f"box at cap-height size {fs0}px; suggestion: "
-                f"{new_text.lower()!r}")
-            err.suggestion = new_text.lower()
-            err.width_px = rendered_w
-            err.box_w_px = w
-            raise err
-    layer, ink_bbox = render_word_layer(new_text, font_path, fs_used, ink_rgb)
-    if ink_bbox is None:
-        raise ValueError(f"cannot render edit {edit}")
+    glyph_image = edit.get("glyph_image")
+    if "glyph_image" in edit and glyph_image is not None \
+            and not isinstance(glyph_image, Image.Image):
+        raise ValueError(
+            "glyph_image for edit "
+            f"{edit.get('row_label', edit.get('new_text'))} is not a PIL "
+            "image — a reloaded edit lost its composed layer. Re-compose "
+            "it from the glyph library before saving; never fall back to "
+            "a font render for a harvest edit.")
+    if glyph_image is not None:
+        # Glyph harvest / retouch: the word is already rendered from
+        # the document's own glyphs. No font, no caps gate, no fit —
+        # the composition IS the size; shrinking it would unmake it.
+        layer = glyph_image
+        alpha = np.array(layer.split()[3])
+        ys, xs = np.where(alpha > 10)
+        if len(xs) == 0:
+            raise ValueError(f"glyph_image for edit {edit} has no ink")
+        ink_bbox = (int(xs.min()), int(ys.min()),
+                    int(xs.max()) + 1, int(ys.max()) + 1)
+        ink_w = ink_bbox[2] - ink_bbox[0]
+        ink_h = ink_bbox[3] - ink_bbox[1]
+        if ink_w > w + 2 * PATCH_MARGIN_PX or ink_h > h + 2 * PATCH_MARGIN_PX:
+            raise ValueError(
+                f"glyph_image ink {ink_w}x{ink_h}px does not fit the "
+                f"{w}x{h}px box (+{PATCH_MARGIN_PX}px margin) for edit "
+                f"{edit} — never clipped silently")
+        font_name = "glyph-harvest"
+        font_path = "glyph-harvest"
+        fs_used = float(edit.get("glyph_cap_h_px") or 0.0)
+        fs0 = fs_used  # the record's cap-height size is the library's
+        rendered_w = float(ink_w)
+        caps_action = "glyph-harvest"
+        scale_x = 1.0
+        fit_w = w
+    else:
+        font_path = edit.get("font_path")
+        if font_path:
+            # Explicit font for this edit (Raviraj header, 2026-11-24):
+            # the document's font is a condensed serif — Liberation, even
+            # squeezed, does not have its letterforms (the invoice value
+            # is also a heavier cut than Liberation Regular but lighter
+            # than Liberation Bold). The path must exist; the name is the
+            # file basename so the record stays honest about what rendered.
+            if not os.path.exists(font_path):
+                raise ValueError(f"font_path does not exist: {font_path}")
+            font_name = os.path.splitext(os.path.basename(font_path))[0]
+        else:
+            font_path, font_name = pick_font(new_text, bold, dna_regular, dna_bold)
+        fs0 = round(edit.get("fs0_px") or h / 0.85, 1)
+        # Fit width: erase box by default; edit["fit_width_px"] decouples the
+        # fit target from the erase box (see docstring). Never wider than
+        # the erase box, or the render could paint past the cleaned patch.
+        fit_w = min(int(edit.get("fit_width_px") or w), w)
+        # Caps rule (proposal B) is enforced on the FITTED size: the live
+        # page fits the width to 97% of the box, clamped to [0.75, 1.25] x
+        # fs0 — a caps word that only fits by shrinking its cap height
+        # below fs0 is NOT a fit. So the caps check runs at fs0, before
+        # width-fitting, and the fitted size may never go below fs0 for caps.
+        caps_decision = fit_caps(new_text, font_path, fs0, fit_w)
+        caps_action = caps_decision["action"]
+        if caps_decision["action"] == "suggest_lowercase" and caps_decision["suggestion"]:
+            if caps_mode == "strict":
+                err = CapsDoesNotFitError(
+                    f"caps {new_text!r} ({caps_decision['width_px']}px) does not "
+                    f"fit a {fit_w}px box at {fs0}px; suggestion: "
+                    f"{caps_decision['suggestion']!r} — never squeezed, never shrunk")
+                err.suggestion = caps_decision["suggestion"]
+                err.width_px = caps_decision["width_px"]
+                err.box_w_px = fit_w
+                raise err
+            new_text = caps_decision["suggestion"]
+            if not edit.get("font_path"):
+                font_path, font_name = pick_font(new_text, bold, dna_regular, dna_bold)
+        fs_used, rendered_w = fit_font_size(new_text, font_path, fs0, fit_w)
+        if caps_decision["action"] in ("caps", "caps_widened_slot") and fs_used < fs0:
+            # A caps word must never be shrunk below its cap-height size to
+            # fit: that is shrink-to-fit by another name (R18: cap height
+            # 37 -> 19.4 px). Re-check at fs0 and refuse instead.
+            fs_used, rendered_w = fs0, measure_width_at(new_text, font_path, fs0)
+            if rendered_w > fit_w:
+                err = CapsDoesNotFitError(
+                    f"caps {new_text!r} ({rendered_w:.0f}px) does not fit a {fit_w}px "
+                    f"box at cap-height size {fs0}px; suggestion: "
+                    f"{new_text.lower()!r}")
+                err.suggestion = new_text.lower()
+                err.width_px = rendered_w
+                err.box_w_px = fit_w
+                raise err
+        layer, ink_bbox = render_word_layer(new_text, font_path, fs_used, ink_rgb)
+        if ink_bbox is None:
+            raise ValueError(f"cannot render edit {edit}")
+        scale_x = float(edit.get("scale_x") or 1.0)
+        if scale_x != 1.0:
+            # Condensed source font (Raviraj spec/invoice, 2026-11-24):
+            # Liberation at the height-matched fs is WIDER than the
+            # original (+3% spec, +9% invoice) because the original font is
+            # condensed — tall and narrow. Matching the size by fs alone is
+            # impossible: fs for the width undershoots the height, fs for
+            # the height overshoots the width. So squeeze the RENDERED TEXT
+            # LAYER horizontally (background untouched, cap height kept).
+            # Range 0.85–1.0 only: never stretch, and never squeeze past a
+            # condensed look — beyond that, a condensed font is the answer,
+            # not a squeeze.
+            if not (0.85 <= scale_x <= 1.0):
+                raise ValueError(f"scale_x {scale_x} outside [0.85, 1.0] for edit {edit}")
+            lw, lh = layer.size
+            layer = layer.resize((max(1, int(round(lw * scale_x))), lh), Image.LANCZOS)
+            ink_bbox = (int(round(ink_bbox[0] * scale_x)), ink_bbox[1],
+                        int(round(ink_bbox[2] * scale_x)), ink_bbox[3])
+            rendered_w = rendered_w * scale_x
     page = clean_patch.copy()
     lx = orig_bbox[0] - px0 - ink_bbox[0]
-    ly = orig_bbox[1] - py0 - ink_bbox[1]
+    # dy_px (Raviraj header, 2026-11-24): the layer is placed by ink
+    # top, which is the SLASH top in the old text but nearly the cap
+    # top in Liberation — shift down so the CAPS, not the slashes,
+    # land on the old caps. +down, 0 by default.
+    ly = orig_bbox[1] - py0 - ink_bbox[1] + int(edit.get("dy_px") or 0)
     page.paste(layer, (lx, ly), layer)
     record = {
         "box": [x0, y0, x1, y1], "row_label": edit.get("row_label", ""),
@@ -308,14 +439,17 @@ def build_patch(upright_rgb, gray, box, edit, dna_regular=None,
         "new_text": new_text, "typed_text": edit["new_text"],
         "caps_action": caps_action, "bold": bold,
         "font": font_name, "font_file": os.path.basename(font_path),
+        "glyph_image": glyph_image is not None,
+        "glyph_retouched": edit.get("glyph_retouched", []),
         "font_size_px": fs_used, "font_size_fs0_px": fs0,
+        "fit_width_px": fit_w, "scale_x": scale_x,
         "rendered_width_px": round(rendered_w, 2),
-        "ink_rgb": ink_rgb,
+        "ink_rgb": ink_rgb, "dy_px": int(edit.get("dy_px") or 0),
         "orig_ink_bbox": list(orig_bbox),
         "ink_touched_mapped_box_edge": touched,
-        "new_ink_bbox": [orig_bbox[0], orig_bbox[1],
+        "new_ink_bbox": [orig_bbox[0], orig_bbox[1] + int(edit.get("dy_px") or 0),
                          orig_bbox[0] + (ink_bbox[2] - ink_bbox[0]),
-                         orig_bbox[1] + (ink_bbox[3] - ink_bbox[1])],
+                         orig_bbox[1] + int(edit.get("dy_px") or 0) + (ink_bbox[3] - ink_bbox[1])],
         "patch_rect": [px0, py0, px1, py1],
         "erase_box": [x0, y0, x1, y1],
     }
@@ -403,7 +537,14 @@ def display_to_page_point(x_d, y_d, page_w_pt, page_h_pt, rotation, zoom):
     coordinates (points). The pixmap is the page as displayed (rotation
     applied); insert_image() takes unrotated page coordinates, so edited
     patches must be mapped back. rotation is the page's /Rotate (0/90/
-    180/270, clockwise). zoom = dpi/72 of the render."""
+    180/270, clockwise). zoom = dpi/72 of the render.
+
+    ``page_w_pt`` / ``page_h_pt`` MUST be the UNROTATED page dimensions
+    (mediabox), NOT page.rect: for a 90/270-rotated page rect is swapped
+    and the mapping lands the patch in the wrong place, squashed
+    (measured 2026-11-24 on a /Rotate 270 supplier COA: rect dims put
+    the spec patch at x 319-330 pt instead of 566-577 pt). For rotation
+    0/180 rect == mediabox, so the old callers were unaffected."""
     x_pt, y_pt = x_d / zoom, y_d / zoom
     if rotation == 0:
         return x_pt, y_pt
@@ -455,18 +596,31 @@ def build_edited_pdf(source_pdf_path, pages_edits, out_path, delivery_id,
             zoom = dpi / 72.0
             rotation = page.rotation
             w_pt, h_pt = page.rect.width, page.rect.height
+            # Patch mapping needs the UNROTATED dimensions (see
+            # display_to_page_point): page.rect is swapped for 90/270.
+            uw_pt, uh_pt = page.mediabox.width, page.mediabox.height
             for patch, rec in zip(patches, records):
                 buf = io.BytesIO()
                 patch.save(buf, format="PNG")
                 x0, y0, x1, y1 = rec["patch_rect"]
                 # patch corners in display coords -> unrotated page coords
-                ax, ay = display_to_page_point(x0, y0, w_pt, h_pt, rotation, zoom)
-                bx, by = display_to_page_point(x1, y1, w_pt, h_pt, rotation, zoom)
+                ax, ay = display_to_page_point(x0, y0, uw_pt, uh_pt, rotation, zoom)
+                bx, by = display_to_page_point(x1, y1, uw_pt, uh_pt, rotation, zoom)
                 rx0, ry0 = min(ax, bx), min(ay, by)
                 rx1, ry1 = max(ax, bx), max(ay, by)
                 r = fitz.Rect(rx0 + RECT_SHRINK_PT, ry0 + RECT_SHRINK_PT,
                               rx1 - RECT_SHRINK_PT, ry1 - RECT_SHRINK_PT)
-                new_page.insert_image(r, stream=buf.getvalue())
+                # The patch is upright in DISPLAY space, but this rect is
+                # in UNROTATED page space: for a rotated page the rect is
+                # transposed (wide-short display rect -> tall-narrow
+                # unrotated rect), and insert_image keeps the image's
+                # proportion, so without rotation the patch shrinks to a
+                # hairline (measured 2026-11-24: a 1754x65 patch landed
+                # as 11x0.41 pt). insert_image's rotate is
+                # counter-clockwise, so rotate by the page rotation itself
+                # (first tried 360-rotation: text came out upside-down).
+                new_page.insert_image(r, stream=buf.getvalue(),
+                                      rotate=rotation)
                 all_records.append((pageno, rec))
             mark = (f"{LSE_VERSION}  |  {len(records)} edit(s)  |  "
                     f"delivery {delivery_id}  |  see certificate")

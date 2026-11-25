@@ -46,6 +46,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from .fonts import find_font as _find_font
 from .heading import heading_lines_guarded as heading_lines
 
 CAP_RATIO = 0.70
@@ -57,8 +58,10 @@ LOT_ANCHOR_HOLD = 0.036  # R18 Track C: measured hold margin of the PG Lot
 S = 1 / 3  # display scale: 2483/3 = 827 px wide, same as the v7 pages
 PAGE_CAPH_FALLBACK = 28.0
 
-LIB_SERIF_REG = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
-LIB_SERIF_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
+# Bundled first (lse/fonts/), system path as fallback — LSE must work
+# on a machine with no system fonts installed.
+LIB_SERIF_REG = _find_font("Liberation Serif") or "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
+LIB_SERIF_BOLD = _find_font("Liberation Serif Bold") or "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
 
 
 def _template():
